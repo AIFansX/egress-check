@@ -37,7 +37,8 @@ set_colors() {
 set_colors
 err() { printf "%s[!]%s %s\n" "$RED" "$R" "$*" >&2; }
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_SOURCE="${BASH_SOURCE[0]:-$0}"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_SOURCE")" 2>/dev/null && pwd || pwd)"
 RULES_FILE="${EGRESS_RULES:-$SCRIPT_DIR/rules.conf}"
 if [[ -n "${EGRESS_CACHE:-}" ]]; then
     CACHE_DIR="$EGRESS_CACHE"
