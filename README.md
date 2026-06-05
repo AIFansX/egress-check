@@ -82,22 +82,22 @@ IPv4 线路分流汇总 (基准 = 默认出口 AS4780)
 ```bash
 git clone https://github.com/AIFansX/egress-check.git
 cd egress-check
-chmod +x egress-check.sh
+chmod +x ip.sh
 cp rules.conf.example rules.conf
-./egress-check.sh
+./ip.sh
 ```
 
 ```bash
-./egress-check.sh -I              # 交互菜单
-./egress-check.sh                 # 默认完整检测
-./egress-check.sh -4              # 只跑 IPv4
-./egress-check.sh -6              # 只跑 IPv6
-./egress-check.sh --only Social   # 只跑某个分类
-./egress-check.sh --json          # JSON 输出
-./egress-check.sh --no-color      # 关闭颜色
+./ip.sh -I              # 交互菜单
+./ip.sh                 # 默认完整检测
+./ip.sh -4              # 只跑 IPv4
+./ip.sh -6              # 只跑 IPv6
+./ip.sh --only Social   # 只跑某个分类
+./ip.sh --json          # JSON 输出
+./ip.sh --no-color      # 关闭颜色
 
-MTR_CONCURRENCY=10 ./egress-check.sh
-IP_LOOKUP_CACHE_TTL=3600 ./egress-check.sh
+MTR_CONCURRENCY=10 ./ip.sh
+IP_LOOKUP_CACHE_TTL=3600 ./ip.sh
 ```
 
 `rules.conf` 语法：
@@ -121,8 +121,8 @@ IP_LOOKUP_CACHE_TTL=3600 ./egress-check.sh
 可自行审计：
 
 ```bash
-grep -oE 'https?://[a-z0-9./]+' egress-check.sh | sort -u
-grep -nE 'crontab|authorized_keys|nohup|disown|/dev/tcp|bash -i|curl.*\|.*sh' egress-check.sh
+grep -oE 'https?://[a-z0-9./]+' ip.sh | sort -u
+grep -nE 'crontab|authorized_keys|nohup|disown|/dev/tcp|bash -i|curl.*\|.*sh' ip.sh
 ```
 
 不会写 crontab，不碰 SSH，无反向连接，无下载执行。临时文件写入 `~/.cache/egress-check/`，退出自动清理；IP / ASN 反查成功结果会缓存到 `~/.cache/egress-check/ip-lookup/`，默认 24 小时，避免重复请求公开接口。
