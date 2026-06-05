@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# 家宽VPS分流一键自查检测 Egress-Check v2.4      鸣谢：https://ip.net.coffee
+# 家宽VPS分流一键自查检测 Egress-Check v2.5      鸣谢：https://ip.net.coffee
 #
 # 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
 # 不同 ASN = 不同出口线路 = 商家做了分流. 一眼看出分了几条线, 哪些域名走哪条.
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-VERSION="2.4"
+VERSION="2.5"
 BRAND_URL="https://ip.net.coffee"
 
 # ─── 颜色 ──────────────────────────────────────────────────────────────────
@@ -432,6 +432,18 @@ lookup_score() {
     [[ -n "$isp" && "$isp" != "Unknown" && "$isp" != "null" ]] && score=$((score+1))
     printf '%s' "$score"
 }
+normalize_lookup_fields() {
+    local asn_var="$1" isp_var="$2" cc_var="$3" asn_val isp_val cc_val
+    asn_val="${!asn_var:-}"
+    isp_val="${!isp_var:-}"
+    cc_val="${!cc_var:-}"
+    [[ "$asn_val" == "??" || "$asn_val" == "null" ]] && asn_val=""
+    [[ "$isp_val" == "null" ]] && isp_val=""
+    [[ "$cc_val" == "null" ]] && cc_val=""
+    printf -v "$asn_var" '%s' "$asn_val"
+    printf -v "$isp_var" '%s' "$isp_val"
+    printf -v "$cc_var" '%s' "$cc_val"
+}
 read_ip_lookup_cache() {
     local ip="$1" path mtime now line
     path="$(ip_lookup_cache_path "$ip")"
@@ -660,6 +672,8 @@ format_latency() {
 print_result_row() {
     [[ $OUTPUT_JSON -eq 1 ]] && return 0
     local marker="$1" domain="$2" ip="$3" latency="$4" cc="$5" asn="$6" isp="$7" is_split="${8:-0}" asn_isp latency_disp
+    [[ "$asn" == "??" || "$asn" == "null" ]] && asn=""
+    [[ "$isp" == "null" ]] && isp="Unknown"
     if [[ -z "$asn" ]]; then asn_isp="$isp"; else asn_isp="AS${asn} ${isp}"; fi
     latency_disp="$(format_latency "$latency")"
     if [[ "$is_split" == "1" ]]; then
@@ -724,7 +738,7 @@ run_check_pass() {
     done
     printf '[\n' > "$tmp_file"
     local first_json=1
-    local -A route_isp=() route_cc=() route_domains=() route_split=() route_scidx=()
+    local -A route_isp=() route_cc=() route_domains=() route_split=() route_scidx=() hop_lookup=()
     local split_idx=0 split_domain_count=0
     local cat
     for cat in "${cat_order[@]}"; do
@@ -747,9 +761,16 @@ run_check_pass() {
             continue
         fi
         local data asn isp country
-        data="$(lookup_ip "$hop" || true)"
+        if [[ -n "${hop_lookup[$hop]+set}" ]]; then
+            data="${hop_lookup[$hop]}"
+        else
+            data="$(lookup_ip "$hop" || true)"
+        fi
         split_lookup_data "$data" asn isp country
+        normalize_lookup_fields asn isp country
         [[ -z "$country" ]] && country="??"; [[ -z "$isp" ]] && isp="Unknown"
+        data="$(printf '%s\t%s\t%s' "$asn" "$isp" "$country")"
+        [[ -z "${hop_lookup[$hop]+set}" && "$(lookup_score "$data")" -ge 3 ]] && hop_lookup[$hop]="$data"
         eval "${prefix}_OK=\$((${prefix}_OK+1))"
         local is_split=0
         [[ -n "$base_asn" && -n "$asn" && "$asn" != "$base_asn" ]] && is_split=1
@@ -840,7 +861,7 @@ do_env_detect() {
             V4_IP="${v4_lines[0]%%|*}"; local detail=""
             for line in "${v4_lines[@]}"; do ip="${line%%|*}"; ep="${line##*|}"; ep="${ep#https://}"; ep="${ep%%/*}"; detail+="${detail:+ ; }${ip}@${ep}"; done
             V4_ECHO_DETAIL="$detail"
-            d="$(lookup_ip "$V4_IP" || true)"; split_lookup_data "$d" a i c
+            d="$(lookup_ip "$V4_IP" || true)"; split_lookup_data "$d" a i c; normalize_lookup_fields a i c
             [[ -z "$c" ]] && c="??"; [[ -z "$i" ]] && i="Unknown"; V4_BASE_ASN="$a"
             if [[ -n "$a" ]]; then V4_INFO="$c · AS${a} ${i}"; else V4_INFO="$c · ${i}"; fi
         fi
@@ -852,7 +873,7 @@ do_env_detect() {
             V6_IP="${v6_lines[0]%%|*}"; local detail=""
             for line in "${v6_lines[@]}"; do ip="${line%%|*}"; ep="${line##*|}"; ep="${ep#https://}"; ep="${ep%%/*}"; detail+="${detail:+ ; }${ip}@${ep}"; done
             V6_ECHO_DETAIL="$detail"
-            d="$(lookup_ip "$V6_IP" || true)"; split_lookup_data "$d" a i c
+            d="$(lookup_ip "$V6_IP" || true)"; split_lookup_data "$d" a i c; normalize_lookup_fields a i c
             [[ -z "$c" ]] && c="??"; [[ -z "$i" ]] && i="Unknown"; V6_BASE_ASN="$a"
             if [[ -n "$a" ]]; then V6_INFO="$c · AS${a} ${i}"; else V6_INFO="$c · ${i}"; fi
         fi
