@@ -50,7 +50,6 @@ bash <(curl -Ls https://raw.githubusercontent.com/AI-Fans-X/egress-check/main/ip
 
 ```text
 Social
-      域名                       首个公网跳         延迟       国家  ASN / ISP
   ●  twitter.com               203.x.x.1        18.4ms     TW   AS4780 Digital United Inc.
   ●  facebook.com              104.28.0.0       86.7ms     US   AS13335 Cloudflare, Inc.    ⮜ 分流
   ●  instagram.com             104.28.0.0       91.2ms     US   AS13335 Cloudflare, Inc.    ⮜ 分流

@@ -537,7 +537,6 @@ print_pass_header() {
 print_category_header() {
     [[ $OUTPUT_JSON -eq 1 ]] && return 0
     printf "\n    %s%s%s\n" "$BOLD" "$1" "$R"
-    printf "      %s   %-24s  %-15s  %-9s  %-3s  %s%s\n" "$DIM" "域名" "首个公网跳" "延迟" "国家" "ASN / ISP" "$R"
 }
 format_latency() {
     local latency="${1:-"-"}" color="$GRAY"
