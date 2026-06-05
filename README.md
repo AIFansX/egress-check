@@ -1,6 +1,12 @@
-﻿# 分流检测 Egress-Check
+# 分流检测 Egress-Check
 
 服务器出口线路分流自查工具。在 SSH 上跑一条命令，自动检测这台机器访问各大网站时实际走了几条出口线路，一眼看出商家有没有做分流、哪些域名走了不同的国际线路。
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/AI-Fans-X/egress-check/main/egress-check.sh) -I
+```
+
+`-I` 会打开交互菜单，输入 `1-6` 就能选择检测模式。以后如果你把短域名指向这个脚本，也可以做成类似 `bash <(curl -Ls https://check.place) -I` 这样的短命令。
 
 主页：[https://ip.net.coffee](https://ip.net.coffee)
 
@@ -17,7 +23,7 @@
 
 ```text
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-分流检测 Egress-Check v2.1 https://ip.net.coffee
+分流检测 Egress-Check v2.2 https://ip.net.coffee
 host: my-vps 2026-06-05T20:00:00+08:00
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -53,7 +59,38 @@ facebook.com instagram.com threads.net whatsapp.com ...
 - JSON 输出：`--json` 供 cron 和监控消费
 - 零配置数据源：HTTPS API 查 ASN，无需注册、token 或本地数据库
 
-## 安装
+## 一键运行
+
+交互菜单版，适合第一次使用：
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/AI-Fans-X/egress-check/main/egress-check.sh) -I
+```
+
+菜单会显示：
+
+```text
+1) 默认完整检测      网络环境 + IPv4 + IPv6
+2) 只检测 IPv4
+3) 只检测 IPv6
+4) 只检测指定分类    AI / Social / Streaming / Search / Developer / Cloud / Crypto / Gaming / Ecommerce / China
+5) JSON 输出         适合 cron / 监控
+6) 高并发日志模式    并发 10 + 关闭颜色
+```
+
+不进菜单，直接跑完整检测：
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/AI-Fans-X/egress-check/main/egress-check.sh)
+```
+
+如果你的系统不支持 `<(...)` 进程替换，也可以用管道方式：
+
+```bash
+curl -Ls https://raw.githubusercontent.com/AI-Fans-X/egress-check/main/egress-check.sh | bash -s -- -I
+```
+
+## 本地安装
 
 ```bash
 git clone https://github.com/AI-Fans-X/egress-check.git
@@ -65,9 +102,10 @@ cp rules.conf.example rules.conf
 
 依赖：bash 4+、mtr、curl、jq、coreutils。脚本启动时自动检测依赖；缺 mtr 时会尝试用 apt/apk/yum/dnf/pacman 自动安装（需 root/sudo）。
 
-## 用法
+## 命令行用法
 
 ```bash
+./egress-check.sh -I              # 交互菜单: 输入 1-6 选择模式
 ./egress-check.sh                 # 默认: 网络环境 + IPv4 + IPv6 分流检测
 ./egress-check.sh -4              # 只跑 IPv4
 ./egress-check.sh -6              # 只跑 IPv6

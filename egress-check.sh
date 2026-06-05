@@ -1,6 +1,6 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# 分流检测 Egress-Check v2.1      https://ip.net.coffee
+# 分流检测 Egress-Check v2.2      https://ip.net.coffee
 #
 # 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
 # 不同 ASN = 不同出口线路 = 商家做了分流. 一眼看出分了几条线, 哪些域名走哪条.
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-VERSION="2.1"
+VERSION="2.2"
 BRAND_URL="https://ip.net.coffee"
 
 # ─── 颜色 ──────────────────────────────────────────────────────────────────
@@ -51,6 +51,7 @@ fi
 
 PASS_MODE="auto"
 OUTPUT_JSON=0
+INTERACTIVE=0
 ONLY_CAT=""
 MTR_TIMEOUT=15
 MTR_MAXTTL=8
@@ -58,11 +59,112 @@ API_TIMEOUT=5
 ENV_TIMEOUT=5
 UA="egress-check/${VERSION} (+${BRAND_URL})"
 
+DEFAULT_RULES=$(cat <<'EOF'
+# Built-in default rules. Format: Category | Domain | reserved | reserved | Note
+AI|openai.com|||OpenAI
+AI|chatgpt.com|||ChatGPT
+AI|anthropic.com|||Anthropic
+AI|claude.ai|||Claude
+AI|gemini.google.com|||Google Gemini
+AI|ai.google.dev|||Google AI Studio
+AI|perplexity.ai|||Perplexity
+AI|grok.com|||Grok
+AI|x.ai|||xAI
+AI|poe.com|||Poe
+AI|copilot.microsoft.com|||Microsoft Copilot
+AI|huggingface.co|||Hugging Face
+Social|x.com|||X
+Social|twitter.com|||Twitter legacy domain
+Social|facebook.com|||Meta
+Social|instagram.com|||Meta
+Social|threads.net|||Meta
+Social|whatsapp.com|||Meta
+Social|tiktok.com|||TikTok
+Social|telegram.org|||Telegram
+Social|discord.com|||Discord
+Social|reddit.com|||Reddit
+Social|linkedin.com|||LinkedIn
+Social|pinterest.com|||Pinterest
+Streaming|netflix.com|||Netflix
+Streaming|youtube.com|||YouTube
+Streaming|disneyplus.com|||Disney+
+Streaming|hulu.com|||Hulu
+Streaming|primevideo.com|||Prime Video
+Streaming|max.com|||Max
+Streaming|spotify.com|||Spotify
+Streaming|twitch.tv|||Twitch
+Streaming|bilibili.com|||Bilibili
+Streaming|iq.com|||iQIYI International
+Streaming|crunchyroll.com|||Crunchyroll
+Streaming|tv.apple.com|||Apple TV
+Search|google.com|||Google Search
+Search|bing.com|||Bing
+Search|duckduckgo.com|||DuckDuckGo
+Search|yahoo.com|||Yahoo
+Search|baidu.com|||Baidu
+Search|yandex.com|||Yandex
+Search|brave.com|||Brave
+Search|startpage.com|||Startpage
+Developer|github.com|||GitHub
+Developer|gitlab.com|||GitLab
+Developer|npmjs.com|||npm
+Developer|pypi.org|||PyPI
+Developer|docker.com|||Docker
+Developer|registry-1.docker.io|||Docker Registry
+Developer|stackoverflow.com|||Stack Overflow
+Developer|cloudflare.com|||Cloudflare
+Developer|vercel.com|||Vercel
+Developer|netlify.com|||Netlify
+Cloud|aws.amazon.com|||AWS
+Cloud|azure.microsoft.com|||Microsoft Azure
+Cloud|cloud.google.com|||Google Cloud
+Cloud|oraclecloud.com|||Oracle Cloud
+Cloud|digitalocean.com|||DigitalOcean
+Cloud|linode.com|||Linode
+Cloud|vultr.com|||Vultr
+Cloud|hetzner.com|||Hetzner
+Crypto|binance.com|||Binance
+Crypto|coinbase.com|||Coinbase
+Crypto|okx.com|||OKX
+Crypto|kraken.com|||Kraken
+Crypto|bybit.com|||Bybit
+Crypto|bitget.com|||Bitget
+Crypto|coingecko.com|||CoinGecko
+Crypto|etherscan.io|||Etherscan
+Gaming|steampowered.com|||Steam Store
+Gaming|steamcommunity.com|||Steam Community
+Gaming|epicgames.com|||Epic Games
+Gaming|battle.net|||Battle.net
+Gaming|ea.com|||EA
+Gaming|playstation.com|||PlayStation
+Gaming|xbox.com|||Xbox
+Gaming|nintendo.com|||Nintendo
+Ecommerce|amazon.com|||Amazon
+Ecommerce|ebay.com|||eBay
+Ecommerce|aliexpress.com|||AliExpress
+Ecommerce|taobao.com|||Taobao
+Ecommerce|tmall.com|||Tmall
+Ecommerce|jd.com|||JD
+Ecommerce|shopee.sg|||Shopee Singapore
+Ecommerce|lazada.sg|||Lazada Singapore
+China|qq.com|||Tencent QQ
+China|wechat.com|||WeChat
+China|weibo.com|||Weibo
+China|douyin.com|||Douyin
+China|zhihu.com|||Zhihu
+China|163.com|||NetEase
+China|sina.com.cn|||Sina
+China|aliyun.com|||Alibaba Cloud
+EOF
+)
+
 usage() {
     cat <<EOF
 分流检测 Egress-Check v${VERSION}   ${BRAND_URL}
 Usage: $(basename "$0") [options]
   (no flag)      自动: 网络环境 + IPv4 线路分流 + IPv6 线路分流
+  -I, --interactive
+                 交互菜单: 输入 1-6 选择检测模式
   -4, --ipv4     只跑 IPv4
   -6, --ipv6     只跑 IPv6
   --json         JSON 输出
@@ -73,8 +175,47 @@ Usage: $(basename "$0") [options]
 EOF
 }
 
+interactive_menu() {
+    cat <<EOF
+
+分流检测 Egress-Check v${VERSION}
+请选择检测模式:
+
+  1) 默认完整检测      网络环境 + IPv4 + IPv6
+  2) 只检测 IPv4
+  3) 只检测 IPv6
+  4) 只检测指定分类    AI / Social / Streaming / Search / Developer / Cloud / Crypto / Gaming / Ecommerce / China
+  5) JSON 输出         适合 cron / 监控
+  6) 高并发日志模式    并发 10 + 关闭颜色
+
+EOF
+    local choice cat_name
+    printf "请输入 1-6 [1]: "
+    IFS= read -r choice
+    choice="${choice:-1}"
+    case "$choice" in
+        1) PASS_MODE="auto" ;;
+        2) PASS_MODE="v4-only" ;;
+        3) PASS_MODE="v6-only" ;;
+        4)
+            printf "请输入分类名 [Social]: "
+            IFS= read -r cat_name
+            ONLY_CAT="${cat_name:-Social}"
+            PASS_MODE="auto"
+            ;;
+        5) OUTPUT_JSON=1 ;;
+        6)
+            MTR_CONCURRENCY="${MTR_CONCURRENCY:-10}"
+            USE_COLOR=0
+            set_colors
+            ;;
+        *) err "无效选择: $choice"; exit 1 ;;
+    esac
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        -I|--interactive) INTERACTIVE=1 ;;
         -4|--ipv4)  PASS_MODE="v4-only" ;;
         -6|--ipv6)  PASS_MODE="v6-only" ;;
         --json)     OUTPUT_JSON=1 ;;
@@ -86,6 +227,8 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+[[ $INTERACTIVE -eq 1 ]] && interactive_menu
 
 if [[ $USE_COLOR -eq 1 ]]; then
     SYM_DOWN="${RED}✗${R}"; SYM_SKIP="${GRAY}⊘${R}"; SYM_STAR="${YELLOW}★${R}"
@@ -138,11 +281,16 @@ need timeout "coreutils"
 need awk
 need grep
 
+USE_EMBEDDED_RULES=0
 if [[ ! -f "$RULES_FILE" ]]; then
-    err "规则文件不存在: $RULES_FILE"
-    [[ -f "$SCRIPT_DIR/rules.conf.example" && "$RULES_FILE" == "$SCRIPT_DIR/rules.conf" ]] && \
-        printf "    先复制模板: cp %s %s\n" "$SCRIPT_DIR/rules.conf.example" "$RULES_FILE" >&2
-    exit 1
+    if [[ -n "${EGRESS_RULES:-}" ]]; then
+        err "规则文件不存在: $RULES_FILE"
+        exit 1
+    elif [[ -f "$SCRIPT_DIR/rules.conf.example" ]]; then
+        RULES_FILE="$SCRIPT_DIR/rules.conf.example"
+    else
+        USE_EMBEDDED_RULES=1
+    fi
 fi
 if ! install -d -m 700 "$CACHE_DIR" 2>/dev/null; then
     err "无法创建/访问 cache 目录: $CACHE_DIR"; exit 1
@@ -275,6 +423,8 @@ first_public_hop() {
 }
 
 declare -a CATS DOMAINS NOTES
+parse_rules() {
+local line source="$1"
 LINENO_RULE=0; FIRST_LINE=1
 while IFS= read -r line || [[ -n "$line" ]]; do
     LINENO_RULE=$((LINENO_RULE+1))
@@ -289,9 +439,15 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -n "$ONLY_CAT" && "$cat_v" != "$ONLY_CAT" ]] && continue
     cat_v="${cat_v:0:16}"; note="${note:0:80}"
     CATS+=("$cat_v"); DOMAINS+=("$domain"); NOTES+=("$note")
-done < "$RULES_FILE"
+done < "$source"
+}
+if [[ $USE_EMBEDDED_RULES -eq 1 ]]; then
+    parse_rules <(printf '%s\n' "$DEFAULT_RULES")
+else
+    parse_rules "$RULES_FILE"
+fi
 TOTAL=${#DOMAINS[@]}
-[[ $TOTAL -eq 0 ]] && { err "rules.conf 中没有可用域名 (或 --only 过滤后为空)"; exit 1; }
+[[ $TOTAL -eq 0 ]] && { err "规则中没有可用域名 (或 --only 过滤后为空)"; exit 1; }
 
 TMP_V4_RESULTS=""; TMP_V6_RESULTS=""; FINAL_JSON=""
 cleanup_tmp() {

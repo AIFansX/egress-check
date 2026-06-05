@@ -1,4 +1,4 @@
-﻿# Egress-Check rule set
+# Egress-Check rule set
 # Format: Category | Domain | reserved | reserved | Note
 # Only the first two fields are required. Lines starting with # are ignored.
 
