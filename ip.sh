@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# 家宽VPS分流一键自查检测 Egress-Check v2.3      鸣谢：https://ip.net.coffee
+# 家宽VPS分流一键自查检测 Egress-Check v2.4      鸣谢：https://ip.net.coffee
 #
 # 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
 # 不同 ASN = 不同出口线路 = 商家做了分流. 一眼看出分了几条线, 哪些域名走哪条.
@@ -13,12 +13,12 @@
 # 以默认出口 ASN 为基准: 相同=未分流(绿), 不同=分流(高亮告警).
 # 退出码: 0=成功  1=配置/依赖错误  2=有域名探测失败
 #
-# 环境变量: MTR_CONCURRENCY(组内并发数,默认6)  EGRESS_RULES  EGRESS_CACHE
+# 环境变量: MTR_CONCURRENCY(组内并发数,默认6)  EGRESS_RULES  EGRESS_CACHE  IP_LOOKUP_CACHE_TTL
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
-VERSION="2.3"
+VERSION="2.4"
 BRAND_URL="https://ip.net.coffee"
 
 # ─── 颜色 ──────────────────────────────────────────────────────────────────
@@ -60,6 +60,7 @@ MTR_COUNT=3
 MTR_ATTEMPTS=4
 API_TIMEOUT=5
 ENV_TIMEOUT=5
+IP_LOOKUP_CACHE_TTL="${IP_LOOKUP_CACHE_TTL:-86400}"
 UA="egress-check/${VERSION} (+${BRAND_URL})"
 
 DEFAULT_RULES=$(cat <<'EOF'
@@ -321,6 +322,11 @@ if ! install -d -m 700 "$CACHE_DIR" 2>/dev/null; then
     err "无法创建/访问 cache 目录: $CACHE_DIR"; exit 1
 fi
 [[ -O "$CACHE_DIR" ]] && chmod 700 "$CACHE_DIR" 2>/dev/null || true
+IP_LOOKUP_CACHE_DIR="$CACHE_DIR/ip-lookup"
+if ! install -d -m 700 "$IP_LOOKUP_CACHE_DIR" 2>/dev/null; then
+    err "无法创建/访问 IP 反查缓存目录: $IP_LOOKUP_CACHE_DIR"; exit 1
+fi
+[[ -O "$IP_LOOKUP_CACHE_DIR" ]] && chmod 700 "$IP_LOOKUP_CACHE_DIR" 2>/dev/null || true
 
 sanitize() { LC_ALL=C tr -d '\000-\037\177'; }
 strip_bom() { local s="$1"; s="${s#$'\xef\xbb\xbf'}"; printf '%s' "$s"; }
@@ -361,8 +367,9 @@ lookup_via_ipsb() {
     local ip="$1" json
     json=$(curl -fsS --max-time "$API_TIMEOUT" --proto '=https' --tlsv1.2 -A "$UA" "https://api.ip.sb/geoip/${ip}" 2>/dev/null) || return 1
     [[ -z "$json" ]] && return 1
-    local cc asn isp
-    IFS=$'\t' read -r cc asn isp < <(printf '%s' "$json" | jq -r '[.country_code // "", (.asn // "" | tostring), .asn_organization // .organization // ""] | @tsv' 2>/dev/null) || return 1
+    local cc asn isp row
+    row=$(printf '%s' "$json" | jq -r '[.country_code // "", (.asn // "" | tostring), .asn_organization // .organization // ""] | @tsv' 2>/dev/null) || return 1
+    split_lookup_data "$row" cc asn isp
     [[ -z "$cc" || "$cc" == "null" ]] && return 1
     [[ "$asn" == "null" ]] && asn=""
     printf '%s\t%s\t%s' "$(printf '%s' "$asn" | sanitize)" "$(printf '%s' "$isp" | sanitize | cut -c1-32)" "$(printf '%s' "$cc" | sanitize | cut -c1-3)"
@@ -371,22 +378,103 @@ lookup_via_ipwhois() {
     local ip="$1" json
     json=$(curl -fsS --max-time "$API_TIMEOUT" --proto '=https' --tlsv1.2 -A "$UA" "https://ipwho.is/${ip}" 2>/dev/null) || return 1
     [[ -z "$json" ]] && return 1
-    local ok cc asn isp
-    IFS=$'\t' read -r ok cc asn isp < <(printf '%s' "$json" | jq -r '[(.success // false | tostring), .country_code // "", (.connection.asn // "" | tostring), .connection.isp // ""] | @tsv' 2>/dev/null) || return 1
+    local ok cc asn isp row
+    row=$(printf '%s' "$json" | jq -r '[(.success // false | tostring), .country_code // "", (.connection.asn // "" | tostring), .connection.isp // ""] | @tsv' 2>/dev/null) || return 1
+    split_tsv4 "$row" ok cc asn isp
     [[ "$ok" != "true" ]] && return 1
     [[ -z "$cc" ]] && return 1
     [[ "$asn" == "null" ]] && asn=""
     printf '%s\t%s\t%s' "$(printf '%s' "$asn" | sanitize)" "$(printf '%s' "$isp" | sanitize | cut -c1-32)" "$(printf '%s' "$cc" | sanitize | cut -c1-3)"
 }
 declare -A IP_CACHE
+ip_lookup_cache_path() {
+    local key
+    key="$(printf '%s' "$1" | sed 's/[^A-Za-z0-9_.-]/_/g')"
+    printf '%s/%s.tsv' "$IP_LOOKUP_CACHE_DIR" "$key"
+}
+split_lookup_data() {
+    local data="$1" asn_var="$2" isp_var="$3" cc_var="$4" rest part_asn part_isp part_cc
+    rest="$data"
+    if [[ "$rest" == *$'\t'* ]]; then
+        part_asn="${rest%%$'\t'*}"
+        rest="${rest#*$'\t'}"
+    else
+        part_asn="$rest"
+        rest=""
+    fi
+    if [[ "$rest" == *$'\t'* ]]; then
+        part_isp="${rest%%$'\t'*}"
+        part_cc="${rest#*$'\t'}"
+    else
+        part_isp="$rest"
+        part_cc=""
+    fi
+    printf -v "$asn_var" '%s' "$part_asn"
+    printf -v "$isp_var" '%s' "$part_isp"
+    printf -v "$cc_var" '%s' "$part_cc"
+}
+split_tsv4() {
+    local data="$1" var1="$2" var2="$3" var3="$4" var4="$5" rest f1 f2 f3 f4
+    rest="$data"
+    if [[ "$rest" == *$'\t'* ]]; then f1="${rest%%$'\t'*}"; rest="${rest#*$'\t'}"; else f1="$rest"; rest=""; fi
+    if [[ "$rest" == *$'\t'* ]]; then f2="${rest%%$'\t'*}"; rest="${rest#*$'\t'}"; else f2="$rest"; rest=""; fi
+    if [[ "$rest" == *$'\t'* ]]; then f3="${rest%%$'\t'*}"; f4="${rest#*$'\t'}"; else f3="$rest"; f4=""; fi
+    printf -v "$var1" '%s' "$f1"
+    printf -v "$var2" '%s' "$f2"
+    printf -v "$var3" '%s' "$f3"
+    printf -v "$var4" '%s' "$f4"
+}
+lookup_score() {
+    local data="$1" asn isp cc score=0
+    split_lookup_data "$data" asn isp cc
+    [[ -n "$cc" && "$cc" != "??" && "$cc" != "null" ]] && score=$((score+1))
+    [[ -n "$asn" && "$asn" != "??" && "$asn" != "null" ]] && score=$((score+1))
+    [[ -n "$isp" && "$isp" != "Unknown" && "$isp" != "null" ]] && score=$((score+1))
+    printf '%s' "$score"
+}
+read_ip_lookup_cache() {
+    local ip="$1" path mtime now line
+    path="$(ip_lookup_cache_path "$ip")"
+    [[ -f "$path" ]] || return 1
+    if mtime="$(stat -c %Y "$path" 2>/dev/null)"; then
+        now="$(date +%s)"
+        [[ "$mtime" =~ ^[0-9]+$ ]] && (( now - mtime > IP_LOOKUP_CACHE_TTL )) && return 1
+    fi
+    IFS= read -r line < "$path" || return 1
+    [[ "$(lookup_score "$line")" -ge 3 ]] || return 1
+    printf '%s' "$line"
+}
+write_ip_lookup_cache() {
+    local ip="$1" result="$2" path tmp
+    [[ "$(lookup_score "$result")" -ge 3 ]] || return 0
+    path="$(ip_lookup_cache_path "$ip")"
+    tmp="${path}.$$"
+    printf '%s\n' "$result" > "$tmp" 2>/dev/null || return 0
+    chmod 600 "$tmp" 2>/dev/null || true
+    mv -f -- "$tmp" "$path" 2>/dev/null || rm -f -- "$tmp" 2>/dev/null || true
+}
 lookup_ip() {
-    local ip="$1" result
+    local ip="$1" result best_result="" score best_score=0 provider
     if [[ -n "${IP_CACHE[$ip]+set}" ]]; then printf '%s' "${IP_CACHE[$ip]}"; return 0; fi
+    if result="$(read_ip_lookup_cache "$ip" 2>/dev/null)"; then
+        IP_CACHE[$ip]="$result"; printf '%s' "$result"; return 0
+    fi
     for provider in ipinfo ipsb ipwhois; do
         if result=$("lookup_via_${provider}" "$ip" 2>/dev/null); then
-            IP_CACHE[$ip]="$result"; printf '%s' "$result"; return 0
+            score="$(lookup_score "$result")"
+            if (( score > best_score )); then
+                best_score="$score"
+                best_result="$result"
+            fi
+            (( score >= 3 )) && break
         fi
     done
+    if [[ -n "$best_result" ]]; then
+        IP_CACHE[$ip]="$best_result"
+        write_ip_lookup_cache "$ip" "$best_result"
+        printf '%s' "$best_result"
+        return 0
+    fi
     IP_CACHE[$ip]=$'\t\t??'; printf '%s' "${IP_CACHE[$ip]}"; return 1
 }
 
@@ -660,7 +748,7 @@ run_check_pass() {
         fi
         local data asn isp country
         data="$(lookup_ip "$hop" || true)"
-        IFS=$'\t' read -r asn isp country <<< "$data"
+        split_lookup_data "$data" asn isp country
         [[ -z "$country" ]] && country="??"; [[ -z "$isp" ]] && isp="Unknown"
         eval "${prefix}_OK=\$((${prefix}_OK+1))"
         local is_split=0
@@ -752,7 +840,7 @@ do_env_detect() {
             V4_IP="${v4_lines[0]%%|*}"; local detail=""
             for line in "${v4_lines[@]}"; do ip="${line%%|*}"; ep="${line##*|}"; ep="${ep#https://}"; ep="${ep%%/*}"; detail+="${detail:+ ; }${ip}@${ep}"; done
             V4_ECHO_DETAIL="$detail"
-            d="$(lookup_ip "$V4_IP" || true)"; IFS=$'\t' read -r a i c <<< "$d"
+            d="$(lookup_ip "$V4_IP" || true)"; split_lookup_data "$d" a i c
             [[ -z "$c" ]] && c="??"; [[ -z "$i" ]] && i="Unknown"; V4_BASE_ASN="$a"
             if [[ -n "$a" ]]; then V4_INFO="$c · AS${a} ${i}"; else V4_INFO="$c · ${i}"; fi
         fi
@@ -764,7 +852,7 @@ do_env_detect() {
             V6_IP="${v6_lines[0]%%|*}"; local detail=""
             for line in "${v6_lines[@]}"; do ip="${line%%|*}"; ep="${line##*|}"; ep="${ep#https://}"; ep="${ep%%/*}"; detail+="${detail:+ ; }${ip}@${ep}"; done
             V6_ECHO_DETAIL="$detail"
-            d="$(lookup_ip "$V6_IP" || true)"; IFS=$'\t' read -r a i c <<< "$d"
+            d="$(lookup_ip "$V6_IP" || true)"; split_lookup_data "$d" a i c
             [[ -z "$c" ]] && c="??"; [[ -z "$i" ]] && i="Unknown"; V6_BASE_ASN="$a"
             if [[ -n "$a" ]]; then V6_INFO="$c · AS${a} ${i}"; else V6_INFO="$c · ${i}"; fi
         fi

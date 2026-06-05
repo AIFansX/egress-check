@@ -37,8 +37,10 @@ bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.s
 - **同时看延迟质量**：不只判断有没有分流，还能看到每个域名的 mtr 平均延迟。
 - **适合排查账号风控**：当社交媒体、电商、金融平台账号异常时，可以快速确认线路是否和商家承诺一致。
 
-## v2.3 新增
+## v2.4 新增
 
+- 新增 IP / ASN 反查缓存：同一个首跳 IP 不重复请求接口，成功结果默认缓存 24 小时
+- 优化 ASN / ISP 反查策略：优先选择国家、ASN、ISP 信息更完整的接口结果
 - 新增 `延迟` 列：`<50ms` 绿色，`50-200ms` 黄色，`>200ms` 棕色
 - 增加多地区电商域名：Shopee、Lazada、Temu、SHEIN、Rakuten、Coupang、Mercado Libre 等
 - mtr 探测重试从 2 次增加到 4 次，降低偶发“无公网跳”失败
@@ -91,6 +93,7 @@ cp rules.conf.example rules.conf
 ./egress-check.sh --no-color      # 关闭颜色
 
 MTR_CONCURRENCY=10 ./egress-check.sh
+IP_LOOKUP_CACHE_TTL=3600 ./egress-check.sh
 ```
 
 `rules.conf` 语法：
@@ -118,7 +121,7 @@ grep -oE 'https?://[a-z0-9./]+' egress-check.sh | sort -u
 grep -nE 'crontab|authorized_keys|nohup|disown|/dev/tcp|bash -i|curl.*\|.*sh' egress-check.sh
 ```
 
-不会写 crontab，不碰 SSH，无反向连接，无下载执行。临时文件写入 `~/.cache/egress-check/`，退出自动清理。
+不会写 crontab，不碰 SSH，无反向连接，无下载执行。临时文件写入 `~/.cache/egress-check/`，退出自动清理；IP / ASN 反查成功结果会缓存到 `~/.cache/egress-check/ip-lookup/`，默认 24 小时，避免重复请求公开接口。
 
 </details>
 
