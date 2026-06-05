@@ -1,0 +1,6 @@
+﻿rules.conf
+.cache/
+last.json
+*.log
+*.env
+secrets/

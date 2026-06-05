@@ -1,0 +1,98 @@
+﻿# Egress-Check rule set
+# Format: Category | Domain | reserved | reserved | Note
+# Only the first two fields are required. Lines starting with # are ignored.
+
+AI|openai.com|||OpenAI
+AI|chatgpt.com|||ChatGPT
+AI|anthropic.com|||Anthropic
+AI|claude.ai|||Claude
+AI|gemini.google.com|||Google Gemini
+AI|ai.google.dev|||Google AI Studio
+AI|perplexity.ai|||Perplexity
+AI|grok.com|||Grok
+AI|x.ai|||xAI
+AI|poe.com|||Poe
+AI|copilot.microsoft.com|||Microsoft Copilot
+AI|huggingface.co|||Hugging Face
+Social|x.com|||X
+Social|twitter.com|||Twitter legacy domain
+Social|facebook.com|||Meta
+Social|instagram.com|||Meta
+Social|threads.net|||Meta
+Social|whatsapp.com|||Meta
+Social|tiktok.com|||TikTok
+Social|telegram.org|||Telegram
+Social|discord.com|||Discord
+Social|reddit.com|||Reddit
+Social|linkedin.com|||LinkedIn
+Social|pinterest.com|||Pinterest
+Streaming|netflix.com|||Netflix
+Streaming|youtube.com|||YouTube
+Streaming|disneyplus.com|||Disney+
+Streaming|hulu.com|||Hulu
+Streaming|primevideo.com|||Prime Video
+Streaming|max.com|||Max
+Streaming|spotify.com|||Spotify
+Streaming|twitch.tv|||Twitch
+Streaming|bilibili.com|||Bilibili
+Streaming|iq.com|||iQIYI International
+Streaming|crunchyroll.com|||Crunchyroll
+Streaming|tv.apple.com|||Apple TV
+Search|google.com|||Google Search
+Search|bing.com|||Bing
+Search|duckduckgo.com|||DuckDuckGo
+Search|yahoo.com|||Yahoo
+Search|baidu.com|||Baidu
+Search|yandex.com|||Yandex
+Search|brave.com|||Brave
+Search|startpage.com|||Startpage
+Developer|github.com|||GitHub
+Developer|gitlab.com|||GitLab
+Developer|npmjs.com|||npm
+Developer|pypi.org|||PyPI
+Developer|docker.com|||Docker
+Developer|registry-1.docker.io|||Docker Registry
+Developer|stackoverflow.com|||Stack Overflow
+Developer|cloudflare.com|||Cloudflare
+Developer|vercel.com|||Vercel
+Developer|netlify.com|||Netlify
+Cloud|aws.amazon.com|||AWS
+Cloud|azure.microsoft.com|||Microsoft Azure
+Cloud|cloud.google.com|||Google Cloud
+Cloud|oraclecloud.com|||Oracle Cloud
+Cloud|digitalocean.com|||DigitalOcean
+Cloud|linode.com|||Linode
+Cloud|vultr.com|||Vultr
+Cloud|hetzner.com|||Hetzner
+Crypto|binance.com|||Binance
+Crypto|coinbase.com|||Coinbase
+Crypto|okx.com|||OKX
+Crypto|kraken.com|||Kraken
+Crypto|bybit.com|||Bybit
+Crypto|bitget.com|||Bitget
+Crypto|coingecko.com|||CoinGecko
+Crypto|etherscan.io|||Etherscan
+Gaming|steampowered.com|||Steam Store
+Gaming|steamcommunity.com|||Steam Community
+Gaming|epicgames.com|||Epic Games
+Gaming|battle.net|||Battle.net
+Gaming|ea.com|||EA
+Gaming|playstation.com|||PlayStation
+Gaming|xbox.com|||Xbox
+Gaming|nintendo.com|||Nintendo
+Ecommerce|amazon.com|||Amazon
+Ecommerce|ebay.com|||eBay
+Ecommerce|aliexpress.com|||AliExpress
+Ecommerce|taobao.com|||Taobao
+Ecommerce|tmall.com|||Tmall
+Ecommerce|jd.com|||JD
+Ecommerce|shopee.sg|||Shopee Singapore
+Ecommerce|lazada.sg|||Lazada Singapore
+China|qq.com|||Tencent QQ
+China|wechat.com|||WeChat
+China|weibo.com|||Weibo
+China|douyin.com|||Douyin
+China|zhihu.com|||Zhihu
+China|163.com|||NetEase
+China|sina.com.cn|||Sina
+China|aliyun.com|||Alibaba Cloud

@@ -1,0 +1,602 @@
+﻿#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────────────
+# 分流检测 Egress-Check v2.1      https://ip.net.coffee
+#
+# 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
+# 不同 ASN = 不同出口线路 = 商家做了分流. 一眼看出分了几条线, 哪些域名走哪条.
+#
+# 默认行为 (无 -4/-6):
+#   1. 检测默认出口 + IPv4/IPv6 真实对外 IP (含商家 SNAT 检测)
+#   2. IPv4 线路分流检测 (按分类逐组并发 mtr → 第一公网跳 → ASN 分组)
+#   3. IPv6 线路分流检测 (不可用则跳过)
+#
+# 以默认出口 ASN 为基准: 相同=未分流(绿), 不同=分流(高亮告警).
+# 退出码: 0=成功  1=配置/依赖错误  2=有域名探测失败
+#
+# 环境变量: MTR_CONCURRENCY(组内并发数,默认6)  EGRESS_RULES  EGRESS_CACHE
+# ─────────────────────────────────────────────────────────────────────────────
+
+set -euo pipefail
+
+VERSION="2.1"
+BRAND_URL="https://ip.net.coffee"
+
+# ─── 颜色 ──────────────────────────────────────────────────────────────────
+USE_COLOR=1
+[[ -t 1 ]] || USE_COLOR=0
+set_colors() {
+    if [[ $USE_COLOR -eq 1 ]]; then
+        R=$'\e[0m'; BOLD=$'\e[1m'; DIM=$'\e[2m'
+        RED=$'\e[31m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'
+        BLUE=$'\e[34m'; MAGENTA=$'\e[35m'; CYAN=$'\e[36m'; GRAY=$'\e[90m'
+    else
+        R=""; BOLD=""; DIM=""
+        RED=""; GREEN=""; YELLOW=""; BLUE=""; MAGENTA=""; CYAN=""; GRAY=""
+    fi
+}
+set_colors
+err() { printf "%s[!]%s %s\n" "$RED" "$R" "$*" >&2; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RULES_FILE="${EGRESS_RULES:-$SCRIPT_DIR/rules.conf}"
+if [[ -n "${EGRESS_CACHE:-}" ]]; then
+    CACHE_DIR="$EGRESS_CACHE"
+else
+    if [[ -z "${HOME:-}" ]]; then
+        err "HOME 未设置且未指定 EGRESS_CACHE."
+        exit 1
+    fi
+    CACHE_DIR="$HOME/.cache/egress-check"
+fi
+
+PASS_MODE="auto"
+OUTPUT_JSON=0
+ONLY_CAT=""
+MTR_TIMEOUT=15
+MTR_MAXTTL=8
+API_TIMEOUT=5
+ENV_TIMEOUT=5
+UA="egress-check/${VERSION} (+${BRAND_URL})"
+
+usage() {
+    cat <<EOF
+分流检测 Egress-Check v${VERSION}   ${BRAND_URL}
+Usage: $(basename "$0") [options]
+  (no flag)      自动: 网络环境 + IPv4 线路分流 + IPv6 线路分流
+  -4, --ipv4     只跑 IPv4
+  -6, --ipv6     只跑 IPv6
+  --json         JSON 输出
+  --no-color     关闭颜色
+  --only <CAT>   只跑指定分类
+  --rules <path> 自定义 rules.conf
+  -h, --help     帮助
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -4|--ipv4)  PASS_MODE="v4-only" ;;
+        -6|--ipv6)  PASS_MODE="v6-only" ;;
+        --json)     OUTPUT_JSON=1 ;;
+        --no-color) USE_COLOR=0; set_colors ;;
+        --only)     ONLY_CAT="${2:-}"; shift ;;
+        --rules)    RULES_FILE="${2:-}"; shift ;;
+        -h|--help)  usage; exit 0 ;;
+        *) err "未知参数: $1"; usage >&2; exit 1 ;;
+    esac
+    shift
+done
+
+if [[ $USE_COLOR -eq 1 ]]; then
+    SYM_DOWN="${RED}✗${R}"; SYM_SKIP="${GRAY}⊘${R}"; SYM_STAR="${YELLOW}★${R}"
+    SYM_WARN="${RED}⚠${R}"; SYM_INFO="${BLUE}ℹ${R}"
+else
+    SYM_DOWN="[XX]"; SYM_SKIP="[--]"; SYM_STAR="*"; SYM_WARN="[!]"; SYM_INFO="[i]"
+fi
+
+need() {
+    local cmd="$1" hint="${2:-}"
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        err "缺少依赖: $cmd"
+        [[ -n "$hint" ]] && printf "    安装: %s\n" "$hint" >&2
+        exit 1
+    fi
+}
+ensure_mtr() {
+    command -v mtr >/dev/null 2>&1 && return 0
+    local sudo=""
+    if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
+        if command -v sudo >/dev/null 2>&1; then sudo="sudo"
+        else err "需要 mtr 但当前非 root 且无 sudo. 请手动安装: apt install mtr-tiny"; exit 1; fi
+    fi
+    printf "%s[*]%s 未检测到 mtr, 正在自动安装...\n" "$BLUE" "$R" >&2
+    if command -v apt-get >/dev/null 2>&1; then
+        $sudo apt-get update -qq >/dev/null 2>&1 || true
+        $sudo apt-get install -y mtr-tiny >/dev/null 2>&1 || $sudo apt-get install -y mtr >/dev/null 2>&1 || true
+    elif command -v apk >/dev/null 2>&1; then
+        $sudo apk add --no-cache mtr >/dev/null 2>&1 || true
+    elif command -v yum >/dev/null 2>&1; then
+        $sudo yum install -y mtr >/dev/null 2>&1 || true
+    elif command -v dnf >/dev/null 2>&1; then
+        $sudo dnf install -y mtr >/dev/null 2>&1 || true
+    elif command -v pacman >/dev/null 2>&1; then
+        $sudo pacman -Sy --noconfirm mtr >/dev/null 2>&1 || true
+    fi
+    if command -v mtr >/dev/null 2>&1; then
+        printf "%s[+]%s mtr 安装成功\n" "$GREEN" "$R" >&2
+        [[ -n "$sudo" || ${EUID:-$(id -u)} -eq 0 ]] && \
+            { ${sudo} setcap cap_net_raw+ep "$(command -v mtr)" >/dev/null 2>&1 || true; }
+        return 0
+    fi
+    err "mtr 自动安装失败, 请手动: apt install mtr-tiny / apk add mtr"
+    exit 1
+}
+ensure_mtr
+need curl    "apt install curl"
+need jq      "apt install jq"
+need timeout "coreutils"
+need awk
+need grep
+
+if [[ ! -f "$RULES_FILE" ]]; then
+    err "规则文件不存在: $RULES_FILE"
+    [[ -f "$SCRIPT_DIR/rules.conf.example" && "$RULES_FILE" == "$SCRIPT_DIR/rules.conf" ]] && \
+        printf "    先复制模板: cp %s %s\n" "$SCRIPT_DIR/rules.conf.example" "$RULES_FILE" >&2
+    exit 1
+fi
+if ! install -d -m 700 "$CACHE_DIR" 2>/dev/null; then
+    err "无法创建/访问 cache 目录: $CACHE_DIR"; exit 1
+fi
+[[ -O "$CACHE_DIR" ]] && chmod 700 "$CACHE_DIR" 2>/dev/null || true
+
+sanitize() { LC_ALL=C tr -d '\000-\037\177'; }
+strip_bom() { local s="$1"; s="${s#$'\xef\xbb\xbf'}"; printf '%s' "$s"; }
+is_valid_domain() { [[ "$1" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,253}[a-zA-Z0-9])?$ ]]; }
+is_private_v4() {
+    local ip="$1"
+    [[ "$ip" =~ ^10\. ]] && return 0
+    [[ "$ip" =~ ^192\.168\. ]] && return 0
+    [[ "$ip" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\. ]] && return 0
+    [[ "$ip" =~ ^127\. ]] && return 0
+    [[ "$ip" =~ ^100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\. ]] && return 0
+    [[ "$ip" =~ ^169\.254\. ]] && return 0
+    [[ "$ip" =~ ^0\. ]] && return 0
+    [[ "$ip" =~ ^22[4-9]\.|^2[3-5][0-9]\. ]] && return 0
+    return 1
+}
+is_private_v6() {
+    local ip="$1"
+    [[ "$ip" =~ ^[Ff][Ee]80: ]] && return 0
+    [[ "$ip" =~ ^[Ff][CcDd] ]] && return 0
+    [[ "$ip" == "::1" ]] && return 0
+    return 1
+}
+
+lookup_via_ipinfo() {
+    local ip="$1" json
+    json=$(curl -fsS --max-time "$API_TIMEOUT" --proto '=https' --tlsv1.2 -A "$UA" "https://ipinfo.io/${ip}/json" 2>/dev/null) || return 1
+    [[ -z "$json" ]] && return 1
+    local cc org
+    IFS=$'\t' read -r cc org < <(printf '%s' "$json" | jq -r '[.country // "", .org // ""] | @tsv' 2>/dev/null) || return 1
+    [[ -z "$cc" ]] && return 1
+    local asn isp
+    if [[ "$org" =~ ^AS([0-9]+)[[:space:]]+(.+)$ ]]; then asn="${BASH_REMATCH[1]}"; isp="${BASH_REMATCH[2]}"
+    else asn=""; isp="$org"; fi
+    printf '%s\t%s\t%s' "$(printf '%s' "$asn" | sanitize)" "$(printf '%s' "$isp" | sanitize | cut -c1-32)" "$(printf '%s' "$cc" | sanitize | cut -c1-3)"
+}
+lookup_via_ipsb() {
+    local ip="$1" json
+    json=$(curl -fsS --max-time "$API_TIMEOUT" --proto '=https' --tlsv1.2 -A "$UA" "https://api.ip.sb/geoip/${ip}" 2>/dev/null) || return 1
+    [[ -z "$json" ]] && return 1
+    local cc asn isp
+    IFS=$'\t' read -r cc asn isp < <(printf '%s' "$json" | jq -r '[.country_code // "", (.asn // "" | tostring), .asn_organization // .organization // ""] | @tsv' 2>/dev/null) || return 1
+    [[ -z "$cc" || "$cc" == "null" ]] && return 1
+    [[ "$asn" == "null" ]] && asn=""
+    printf '%s\t%s\t%s' "$(printf '%s' "$asn" | sanitize)" "$(printf '%s' "$isp" | sanitize | cut -c1-32)" "$(printf '%s' "$cc" | sanitize | cut -c1-3)"
+}
+lookup_via_ipwhois() {
+    local ip="$1" json
+    json=$(curl -fsS --max-time "$API_TIMEOUT" --proto '=https' --tlsv1.2 -A "$UA" "https://ipwho.is/${ip}" 2>/dev/null) || return 1
+    [[ -z "$json" ]] && return 1
+    local ok cc asn isp
+    IFS=$'\t' read -r ok cc asn isp < <(printf '%s' "$json" | jq -r '[(.success // false | tostring), .country_code // "", (.connection.asn // "" | tostring), .connection.isp // ""] | @tsv' 2>/dev/null) || return 1
+    [[ "$ok" != "true" ]] && return 1
+    [[ -z "$cc" ]] && return 1
+    [[ "$asn" == "null" ]] && asn=""
+    printf '%s\t%s\t%s' "$(printf '%s' "$asn" | sanitize)" "$(printf '%s' "$isp" | sanitize | cut -c1-32)" "$(printf '%s' "$cc" | sanitize | cut -c1-3)"
+}
+declare -A IP_CACHE
+lookup_ip() {
+    local ip="$1" result
+    if [[ -n "${IP_CACHE[$ip]+set}" ]]; then printf '%s' "${IP_CACHE[$ip]}"; return 0; fi
+    for provider in ipinfo ipsb ipwhois; do
+        if result=$("lookup_via_${provider}" "$ip" 2>/dev/null); then
+            IP_CACHE[$ip]="$result"; printf '%s' "$result"; return 0
+        fi
+    done
+    IP_CACHE[$ip]=$'\t\t??'; printf '%s' "${IP_CACHE[$ip]}"; return 1
+}
+
+ENV_ENDPOINTS=(
+    "https://api.ip.sb/ip" "https://ipinfo.io/ip" "https://icanhazip.com"
+    "https://ifconfig.me/ip" "https://api.ipify.org" "https://checkip.amazonaws.com"
+)
+detect_default_egress_ip() {
+    local ep ip
+    for ep in "${ENV_ENDPOINTS[@]}"; do
+        ip=$(curl -fsS --max-time "$ENV_TIMEOUT" --proto '=https' --tlsv1.2 -A "$UA" "$ep" 2>/dev/null | tr -d '[:space:]' || true)
+        [[ -n "$ip" ]] && { printf '%s' "$ip"; return 0; }
+    done
+    return 1
+}
+detect_all_v4_egress_ips() {
+    local ep ip
+    for ep in "${ENV_ENDPOINTS[@]}"; do
+        ip=$(curl -fsS -4 --max-time "$ENV_TIMEOUT" --proto '=https' --tlsv1.2 -A "$UA" "$ep" 2>/dev/null | tr -d '[:space:]' || true)
+        [[ -n "$ip" && "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && printf '%s|%s\n' "$ip" "$ep"
+    done
+}
+detect_all_v6_egress_ips() {
+    local ep ip
+    for ep in "${ENV_ENDPOINTS[@]}"; do
+        ip=$(curl -fsS -6 --max-time "$ENV_TIMEOUT" --proto '=https' --tlsv1.2 -A "$UA" "$ep" 2>/dev/null | tr -d '[:space:]' || true)
+        [[ -n "$ip" && "$ip" == *:* ]] && printf '%s|%s\n' "$ip" "$ep"
+    done
+}
+ip_family() {
+    local ip="$1"
+    if [[ "$ip" == *:* ]]; then printf 'ipv6'
+    elif [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then printf 'ipv4'
+    else printf 'unknown'; fi
+}
+
+first_public_hop() {
+    local ip_flag="$1" domain="$2" output ip attempt found
+    is_valid_domain "$domain" || { printf ''; return; }
+    for attempt in 1 2; do
+        output=$(timeout "$MTR_TIMEOUT" mtr "$ip_flag" -r -n -c 1 -m "$MTR_MAXTTL" "$domain" 2>/dev/null || true)
+        found=""
+        if [[ "$ip_flag" == "-6" ]]; then
+            while IFS= read -r ip; do
+                [[ -z "$ip" ]] && continue
+                is_private_v6 "$ip" && continue
+                found="$ip"; break
+            done < <(printf '%s\n' "$output" | grep -oE '([0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F:]+' || true)
+        else
+            while IFS= read -r ip; do
+                [[ -z "$ip" ]] && continue
+                is_private_v4 "$ip" && continue
+                found="$ip"; break
+            done < <(printf '%s\n' "$output" | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' || true)
+        fi
+        [[ -n "$found" ]] && { printf '%s' "$found"; return; }
+        sleep 0.5
+    done
+}
+
+declare -a CATS DOMAINS NOTES
+LINENO_RULE=0; FIRST_LINE=1
+while IFS= read -r line || [[ -n "$line" ]]; do
+    LINENO_RULE=$((LINENO_RULE+1))
+    if [[ $FIRST_LINE -eq 1 ]]; then line="$(strip_bom "$line")"; FIRST_LINE=0; fi
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    IFS='|' read -r f1 f2 f3 f4 f5 <<< "$line"
+    cat_v="$(printf '%s' "${f1:-}" | sanitize | awk '{$1=$1;print}')"
+    domain="$(printf '%s' "${f2:-}" | sanitize | awk '{$1=$1;print}')"
+    note="$(printf '%s' "${f5:-}" | sanitize | awk '{$1=$1;print}')"
+    [[ -z "$domain" ]] && continue
+    if ! is_valid_domain "$domain"; then err "rules.conf:$LINENO_RULE 跳过非法域名: $domain"; continue; fi
+    [[ -n "$ONLY_CAT" && "$cat_v" != "$ONLY_CAT" ]] && continue
+    cat_v="${cat_v:0:16}"; note="${note:0:80}"
+    CATS+=("$cat_v"); DOMAINS+=("$domain"); NOTES+=("$note")
+done < "$RULES_FILE"
+TOTAL=${#DOMAINS[@]}
+[[ $TOTAL -eq 0 ]] && { err "rules.conf 中没有可用域名 (或 --only 过滤后为空)"; exit 1; }
+
+TMP_V4_RESULTS=""; TMP_V6_RESULTS=""; FINAL_JSON=""
+cleanup_tmp() {
+    [[ -n "$TMP_V4_RESULTS" ]] && rm -f -- "$TMP_V4_RESULTS"
+    [[ -n "$TMP_V6_RESULTS" ]] && rm -f -- "$TMP_V6_RESULTS"
+    [[ -n "$FINAL_JSON" ]] && rm -f -- "$FINAL_JSON"
+    rm -rf "$CACHE_DIR"/.mtrout.* 2>/dev/null || true
+}
+trap 'exit 130' INT; trap 'exit 143' TERM; trap 'exit 129' HUP; trap cleanup_tmp EXIT
+
+is_tty() { [[ -t 1 && $USE_COLOR -eq 1 ]]; }
+repeat_char() { local c="$1" w="$2" r; printf -v r "%${w}s" ""; printf '%s' "${r// /$c}"; }
+rule_double() { printf "%s%s%s\n" "$CYAN" "$(repeat_char "━" "${1:-72}")" "$R"; }
+rule_single() { printf "%s%s%s" "$GRAY" "$(repeat_char "─" "${1:-60}")" "$R"; }
+print_banner() {
+    rule_double 72
+    printf "  %s分流检测%s  %sEgress-Check v%s%s     %s%s%s\n" "$BOLD" "$R" "$CYAN" "$VERSION" "$R" "$GRAY" "$BRAND_URL" "$R"
+    printf "  %shost%s: %s%s%s     %s%s%s\n" "$DIM" "$R" "$BOLD" "$1" "$R" "$GRAY" "$2" "$R"
+    rule_double 72
+}
+print_env_section() {
+    local def="$1" v4="$2" v6="$3" v4info="$4" v6info="$5"
+    printf "\n  %s网络环境 (真实对外 IP)%s\n" "$BOLD" "$R"
+    printf "  %s\n" "$(rule_single 36)"
+    case "$def" in
+        ipv4) printf "    默认出口     %sIPv4%s  %s\n" "$GREEN" "$R" "$SYM_STAR" ;;
+        ipv6) printf "    默认出口     %sIPv6%s  %s\n" "$GREEN" "$R" "$SYM_STAR" ;;
+        *)    printf "    默认出口     %s无网络出口%s\n" "$RED" "$R" ;;
+    esac
+    if [[ -n "$v4" ]]; then printf "    IPv4 出口    %s%s%s  %s%s%s\n" "$BOLD" "$v4" "$R" "$DIM" "$v4info" "$R"
+    else printf "    IPv4 出口    %s不可用%s\n" "$RED" "$R"; fi
+    if [[ -n "$v6" ]]; then printf "    IPv6 出口    %s%s%s  %s%s%s\n" "$BOLD" "$v6" "$R" "$DIM" "$v6info" "$R"
+    else printf "    IPv6 出口    %s不可用 / 已禁用%s\n" "$YELLOW" "$R"; fi
+    local item
+    if [[ -n "$v4" && $V4_ECHO_UNIQUE -gt 1 ]]; then
+        printf "\n    %s%s 商家 SNAT 嫌疑%s — %s%d 个回声服务看到不同对外 IP%s\n" "$RED" "$SYM_WARN" "$R" "$DIM" "$V4_ECHO_UNIQUE" "$R"
+        local IFS_save="$IFS"; IFS=';'
+        for item in $V4_ECHO_DETAIL; do item="${item# }"; printf "      %s· %s%s\n" "$DIM" "$item" "$R"; done
+        IFS="$IFS_save"
+    fi
+}
+print_pass_header() {
+    [[ $OUTPUT_JSON -eq 1 ]] && return 0
+    printf "\n  %s%s 线路分流检测%s  %s%s%s\n" "$BOLD" "$1" "$R" "$GRAY" "$(repeat_char "─" 44)" "$R"
+}
+print_category_header() {
+    [[ $OUTPUT_JSON -eq 1 ]] && return 0
+    printf "\n    %s%s%s\n" "$BOLD" "$1" "$R"
+}
+print_result_row() {
+    [[ $OUTPUT_JSON -eq 1 ]] && return 0
+    local marker="$1" domain="$2" ip="$3" cc="$4" asn="$5" isp="$6" is_split="${7:-0}" asn_isp
+    if [[ -z "$asn" ]]; then asn_isp="$isp"; else asn_isp="AS${asn} ${isp}"; fi
+    if [[ "$is_split" == "1" ]]; then
+        printf "      %b  %s%-24s  %-15s  %-3s  %-34s  ⮜ 分流%s\n" "$marker" "$YELLOW" "$domain" "$ip" "$cc" "${asn_isp:0:34}" "$R"
+    else
+        printf "      %b  %-24s  %-15s  %-3s  %s%s%s\n" "$marker" "$domain" "$ip" "$cc" "$DIM" "${asn_isp:0:34}" "$R"
+    fi
+}
+format_elapsed() {
+    local s="$1"
+    if (( s < 60 )); then printf '%ds' "$s"
+    elif (( s < 3600 )); then printf '%dm %ds' $((s/60)) $((s%60))
+    else printf '%dh %dm' $((s/3600)) $(((s%3600)/60)); fi
+}
+
+run_mtr_group() {
+    local ip_flag="$1" out_dir="$2" cat="$3"; shift 3
+    local -a idxs=("$@")
+    local total=${#idxs[@]} maxjobs="${MTR_CONCURRENCY:-6}" running=0 idx spin_pid=""
+    local -a mtr_pids=()
+    if [[ $OUTPUT_JSON -eq 0 ]] && is_tty; then
+        ( k=0
+          while :; do
+              cnt=0; for ix in "${idxs[@]}"; do [[ -f "$out_dir/$ix" ]] && cnt=$((cnt+1)); done
+              k=$(( (k % 5) + 1 )); d=$(printf '%*s' "$k" '' | tr ' ' '.')
+              printf "\r    %s检测中%s %s%s 组%s%-6s %s(%s/%s)%s" "$CYAN" "$R" "$BOLD" "$cat" "$R" "$d" "$DIM" "$cnt" "$total" "$R"
+              sleep 0.3
+          done ) &
+        spin_pid=$!
+    fi
+    for idx in "${idxs[@]}"; do
+        {
+            local hop; hop="$(first_public_hop "$ip_flag" "${DOMAINS[$idx]}")"
+            printf '%s' "$hop" > "$out_dir/$idx"
+        } &
+        mtr_pids+=($!)
+        running=$((running+1))
+        sleep 0.1
+        if (( running >= maxjobs )); then wait -n 2>/dev/null || true; running=$((running-1)); fi
+    done
+    wait "${mtr_pids[@]}" 2>/dev/null || true
+    if [[ -n "$spin_pid" ]]; then kill "$spin_pid" 2>/dev/null || true; wait "$spin_pid" 2>/dev/null || true; printf "\r\033[K"; fi
+}
+
+run_check_pass() {
+    local label="$1" ip_flag="$2" tmp_file="$3" prefix base_asn
+    case "$label" in
+        IPv4) prefix=V4; base_asn="${V4_BASE_ASN:-}" ;;
+        IPv6) prefix=V6; base_asn="${V6_BASE_ASN:-}" ;;
+    esac
+    eval "${prefix}_OK=0"; eval "${prefix}_DOWN=0"
+    local SPLIT_COLORS=( "$YELLOW" "$MAGENTA" "$RED" "$CYAN" )
+    local split_color_n=4
+    print_pass_header "$label"
+    local out_dir; out_dir="$(mktemp -d "$CACHE_DIR/.mtrout.XXXXXX")"
+    local -A cat_idxs=(); local -a cat_order=()
+    local gi
+    for gi in "${!DOMAINS[@]}"; do
+        local gc="${CATS[$gi]}"
+        if [[ -z "${cat_idxs[$gc]+x}" ]]; then cat_order+=("$gc"); cat_idxs[$gc]=""; fi
+        cat_idxs[$gc]+="$gi "
+    done
+    printf '[\n' > "$tmp_file"
+    local first_json=1
+    local -A route_isp=() route_cc=() route_domains=() route_split=() route_scidx=()
+    local split_idx=0 split_domain_count=0
+    local cat
+    for cat in "${cat_order[@]}"; do
+        print_category_header "$cat"
+        local -a gidxs=(${cat_idxs[$cat]})
+        run_mtr_group "$ip_flag" "$out_dir" "$cat" "${gidxs[@]}"
+        local idx
+        for idx in "${gidxs[@]}"; do
+        local cat_v="$cat" domain="${DOMAINS[$idx]}" note="${NOTES[$idx]}"
+        local hop; hop="$(cat "$out_dir/$idx" 2>/dev/null || true)"
+        if [[ -z "$hop" ]]; then
+            eval "${prefix}_DOWN=\$((${prefix}_DOWN+1))"
+            [[ $OUTPUT_JSON -eq 0 ]] && print_result_row "$SYM_DOWN" "$domain" "-" "-" "" "探测失败 / 无公网跳" 0
+            [[ $first_json -eq 0 ]] && printf ',\n' >> "$tmp_file"; first_json=0
+            jq -n --arg c "$cat_v" --arg d "$domain" --arg note "$note" \
+                '{category:$c, domain:$d, status:"down", first_hop:null, asn:null, isp:null, country:null, split:null, note:$note}' >> "$tmp_file"
+            continue
+        fi
+        local data asn isp country
+        data="$(lookup_ip "$hop" || true)"
+        IFS=$'\t' read -r asn isp country <<< "$data"
+        [[ -z "$country" ]] && country="??"; [[ -z "$isp" ]] && isp="Unknown"
+        eval "${prefix}_OK=\$((${prefix}_OK+1))"
+        local is_split=0
+        [[ -n "$base_asn" && -n "$asn" && "$asn" != "$base_asn" ]] && is_split=1
+        local key="$asn"; [[ -z "$key" ]] && key="ip:$hop"
+        if [[ -z "${route_split[$key]+x}" ]]; then
+            route_isp[$key]="$isp"; route_cc[$key]="$country"
+            route_domains[$key]="$domain"; route_split[$key]="$is_split"
+            if [[ $is_split -eq 1 ]]; then route_scidx[$key]=$split_idx; split_idx=$((split_idx+1)); else route_scidx[$key]=-1; fi
+        else route_domains[$key]+=" $domain"; fi
+        [[ $is_split -eq 1 ]] && split_domain_count=$((split_domain_count+1))
+        local marker
+        if [[ $is_split -eq 1 ]]; then marker="${SPLIT_COLORS[${route_scidx[$key]} % split_color_n]}●${R}"; else marker="${GREEN}●${R}"; fi
+        [[ $OUTPUT_JSON -eq 0 ]] && print_result_row "$marker" "$domain" "$hop" "$country" "$asn" "$isp" "$is_split"
+        [[ $first_json -eq 0 ]] && printf ',\n' >> "$tmp_file"; first_json=0
+        local split_json="false"; [[ $is_split -eq 1 ]] && split_json="true"
+        if [[ -z "$asn" ]]; then
+            jq -n --arg c "$cat_v" --arg d "$domain" --arg h "$hop" --arg isp "$isp" --arg cc "$country" --argjson sp "$split_json" --arg note "$note" \
+                '{category:$c, domain:$d, status:"ok", first_hop:$h, asn:null, isp:$isp, country:$cc, split:$sp, note:$note}' >> "$tmp_file"
+        else
+            jq -n --arg c "$cat_v" --arg d "$domain" --arg h "$hop" --arg asn "$asn" --arg isp "$isp" --arg cc "$country" --argjson sp "$split_json" --arg note "$note" \
+                '{category:$c, domain:$d, status:"ok", first_hop:$h, asn:("AS"+$asn), isp:$isp, country:$cc, split:$sp, note:$note}' >> "$tmp_file"
+        fi
+        done
+    done
+    printf '\n]\n' >> "$tmp_file"
+    rm -rf "$out_dir" 2>/dev/null || true
+    local route_count=${#route_split[@]}
+    eval "${prefix}_ROUTE_COUNT=$route_count"
+    eval "${prefix}_SPLIT_DOMAINS=$split_domain_count"
+    if [[ $OUTPUT_JSON -eq 0 && $route_count -gt 0 ]]; then
+        printf "\n  %s%s 线路分流汇总%s  %s(基准 = 默认出口 %s)%s\n" "$BOLD" "$label" "$R" "$DIM" "${base_asn:+AS$base_asn}" "$R"
+        printf "  %s\n" "$(rule_single 60)"
+        local key round
+        for round in base split; do
+            for key in "${!route_split[@]}"; do
+                if [[ "$round" == "base" ]]; then [[ "${route_split[$key]}" == "0" ]] || continue
+                else [[ "${route_split[$key]}" == "1" ]] || continue; fi
+                local dlist="${route_domains[$key]}"
+                local dcount; dcount=$(printf '%s\n' $dlist | wc -l | tr -d ' ')
+                local asn_disp="$key"
+                [[ "$key" == ip:* ]] && asn_disp="${key#ip:}" || asn_disp="AS$key"
+                local marker tag tagcol
+                if [[ "${route_split[$key]}" == "1" ]]; then
+                    marker="${SPLIT_COLORS[${route_scidx[$key]} % split_color_n]}●${R}"; tag="⚠ 存在分流"; tagcol="$YELLOW"
+                else
+                    marker="${GREEN}●${R}"; tag="✓ 符合预期 (未分流)"; tagcol="$GREEN"
+                fi
+                printf "    %b  %s%-26s%s %s(%s · %s)%s  %s%d 域名%s  %s%s%s\n" \
+                    "$marker" "$BOLD" "${route_isp[$key]}" "$R" "$DIM" "$asn_disp" "${route_cc[$key]}" "$R" "$BOLD" "$dcount" "$R" "$tagcol" "$tag" "$R"
+                local linecol="$DIM"; [[ "${route_split[$key]}" == "1" ]] && linecol="$YELLOW"
+                local d cnt=0 lineout="      "
+                for d in $dlist; do
+                    lineout+="$d  "; cnt=$((cnt+1))
+                    if [[ $cnt -eq 4 ]]; then printf "%s%s%s\n" "$linecol" "$lineout" "$R"; lineout="      "; cnt=0; fi
+                done
+                [[ $cnt -gt 0 ]] && printf "%s%s%s\n" "$linecol" "$lineout" "$R"
+            done
+        done
+        printf "\n"
+        if [[ $split_idx -ge 1 ]]; then
+            printf "  %s%s %s检测到分流: %d 条非默认线路, %d 个域名被分流到其他出口%s\n" "$BOLD" "$SYM_WARN" "$YELLOW" "$split_idx" "$split_domain_count" "$R"
+        else
+            printf "  %s%s %s所有域名走同一出口 (AS%s) — 未检测到分流%s\n" "$BOLD" "$SYM_INFO" "$GREEN" "${base_asn:-?}" "$R"
+        fi
+    fi
+}
+
+START_EPOCH=$(date +%s)
+START_TS="$(date -Iseconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z')"
+_raw_host="$(hostname 2>/dev/null || printf 'unknown')"
+HOST_NAME="$(printf '%s' "$_raw_host" | LC_ALL=C tr -d '\000-\037\177')"; unset _raw_host
+V4_OK=0; V4_DOWN=0; V4_ROUTE_COUNT=0; V6_OK=0; V6_DOWN=0; V6_ROUTE_COUNT=0
+V4_PASS_RAN=0; V6_PASS_RAN=0; V4_ECHO_UNIQUE=0; V6_ECHO_UNIQUE=0
+V4_ECHO_DETAIL=""; V6_ECHO_DETAIL=""; DEFAULT_EGRESS="none"
+V4_IP=""; V6_IP=""; V4_INFO="—"; V6_INFO="—"
+V4_BASE_ASN=""; V6_BASE_ASN=""; V4_SPLIT_DOMAINS=0; V6_SPLIT_DOMAINS=0
+[[ $OUTPUT_JSON -eq 0 ]] && print_banner "$HOST_NAME" "$START_TS"
+do_env_detect() {
+    local a c d i def_ip line ip ep
+    local -a v4_lines=() v6_lines=()
+    local -A v4_seen=() v6_seen=()
+    if [[ "$PASS_MODE" == "auto" || "$PASS_MODE" == "v4-only" ]]; then
+        while IFS= read -r line; do [[ -z "$line" ]] && continue; v4_lines+=("$line"); v4_seen["${line%%|*}"]=1; done < <(detect_all_v4_egress_ips)
+        V4_ECHO_UNIQUE=${#v4_seen[@]}
+        if [[ ${#v4_lines[@]} -gt 0 ]]; then
+            V4_IP="${v4_lines[0]%%|*}"; local detail=""
+            for line in "${v4_lines[@]}"; do ip="${line%%|*}"; ep="${line##*|}"; ep="${ep#https://}"; ep="${ep%%/*}"; detail+="${detail:+ ; }${ip}@${ep}"; done
+            V4_ECHO_DETAIL="$detail"
+            d="$(lookup_ip "$V4_IP" || true)"; IFS=$'\t' read -r a i c <<< "$d"
+            [[ -z "$c" ]] && c="??"; [[ -z "$i" ]] && i="Unknown"; V4_BASE_ASN="$a"
+            if [[ -n "$a" ]]; then V4_INFO="$c · AS${a} ${i}"; else V4_INFO="$c · ${i}"; fi
+        fi
+    fi
+    if [[ "$PASS_MODE" == "auto" || "$PASS_MODE" == "v6-only" ]]; then
+        while IFS= read -r line; do [[ -z "$line" ]] && continue; v6_lines+=("$line"); v6_seen["${line%%|*}"]=1; done < <(detect_all_v6_egress_ips)
+        V6_ECHO_UNIQUE=${#v6_seen[@]}
+        if [[ ${#v6_lines[@]} -gt 0 ]]; then
+            V6_IP="${v6_lines[0]%%|*}"; local detail=""
+            for line in "${v6_lines[@]}"; do ip="${line%%|*}"; ep="${line##*|}"; ep="${ep#https://}"; ep="${ep%%/*}"; detail+="${detail:+ ; }${ip}@${ep}"; done
+            V6_ECHO_DETAIL="$detail"
+            d="$(lookup_ip "$V6_IP" || true)"; IFS=$'\t' read -r a i c <<< "$d"
+            [[ -z "$c" ]] && c="??"; [[ -z "$i" ]] && i="Unknown"; V6_BASE_ASN="$a"
+            if [[ -n "$a" ]]; then V6_INFO="$c · AS${a} ${i}"; else V6_INFO="$c · ${i}"; fi
+        fi
+    fi
+    if [[ "$PASS_MODE" == "auto" ]]; then
+        def_ip="$(detect_default_egress_ip || true)"; [[ -n "$def_ip" ]] && DEFAULT_EGRESS="$(ip_family "$def_ip")"
+    elif [[ "$PASS_MODE" == "v4-only" ]]; then DEFAULT_EGRESS="ipv4"
+    elif [[ "$PASS_MODE" == "v6-only" ]]; then DEFAULT_EGRESS="ipv6"; fi
+}
+do_env_detect
+[[ $OUTPUT_JSON -eq 0 && "$PASS_MODE" == "auto" ]] && print_env_section "$DEFAULT_EGRESS" "$V4_IP" "$V6_IP" "$V4_INFO" "$V6_INFO"
+[[ $OUTPUT_JSON -eq 0 ]] && printf "\n  %s共 %d 个域名, 按分类逐组检测 (绿●=默认出口, 彩色●=分流)%s\n" "$DIM" "$TOTAL" "$R"
+TMP_V4_RESULTS="$(mktemp "$CACHE_DIR/.tmp-v4.XXXXXXXX")"
+TMP_V6_RESULTS="$(mktemp "$CACHE_DIR/.tmp-v6.XXXXXXXX")"
+chmod 600 "$TMP_V4_RESULTS" "$TMP_V6_RESULTS"
+V6_SKIP_REASON=""
+case "$PASS_MODE" in
+    auto)
+        if [[ -n "$V4_IP" ]]; then run_check_pass "IPv4" "-4" "$TMP_V4_RESULTS"; V4_PASS_RAN=1
+        else print_pass_header "IPv4"; [[ $OUTPUT_JSON -eq 0 ]] && printf "    %s  IPv4 出口不可用 — 跳过\n" "$SYM_SKIP"; fi
+        if [[ -n "$V6_IP" ]]; then run_check_pass "IPv6" "-6" "$TMP_V6_RESULTS"; V6_PASS_RAN=1
+        else V6_SKIP_REASON="IPv6 出口不可用或已禁用"; print_pass_header "IPv6"; [[ $OUTPUT_JSON -eq 0 ]] && printf "    %s  %s — 跳过\n" "$SYM_SKIP" "$V6_SKIP_REASON"; fi ;;
+    v4-only) if [[ -n "$V4_IP" ]]; then run_check_pass "IPv4" "-4" "$TMP_V4_RESULTS"; V4_PASS_RAN=1; else err "IPv4 出口不可用"; exit 2; fi ;;
+    v6-only) if [[ -n "$V6_IP" ]]; then run_check_pass "IPv6" "-6" "$TMP_V6_RESULTS"; V6_PASS_RAN=1; else err "IPv6 出口不可用"; exit 2; fi ;;
+esac
+END_EPOCH=$(date +%s); ELAPSED=$((END_EPOCH - START_EPOCH)); ELAPSED_STR="$(format_elapsed "$ELAPSED")"
+if [[ $OUTPUT_JSON -eq 0 ]]; then
+    printf "\n"; rule_double 72
+    if [[ $V4_PASS_RAN -eq 1 ]]; then
+        printf "  IPv4:  %s%d 域名%s   %s%d 条线路%s   %s%d 域名分流%s   %s%d 探测失败%s\n" "$GREEN" "$V4_OK" "$R" "$CYAN" "$V4_ROUTE_COUNT" "$R" "$YELLOW" "$V4_SPLIT_DOMAINS" "$R" "$RED" "$V4_DOWN" "$R"
+    else printf "  IPv4:  %s skipped\n" "$SYM_SKIP"; fi
+    if [[ $V6_PASS_RAN -eq 1 ]]; then
+        printf "  IPv6:  %s%d 域名%s   %s%d 条线路%s   %s%d 域名分流%s   %s%d 探测失败%s\n" "$GREEN" "$V6_OK" "$R" "$CYAN" "$V6_ROUTE_COUNT" "$R" "$YELLOW" "$V6_SPLIT_DOMAINS" "$R" "$RED" "$V6_DOWN" "$R"
+    else printf "  IPv6:  %s skipped  %s%s%s\n" "$SYM_SKIP" "$DIM" "${V6_SKIP_REASON:-}" "$R"; fi
+    printf "  %selapsed:%s %s\n" "$DIM" "$R" "$ELAPSED_STR"; rule_double 72
+fi
+FINAL_JSON="$(mktemp "$CACHE_DIR/.tmp-final.XXXXXXXX")"; chmod 600 "$FINAL_JSON"
+build_pass_obj() {
+    local prefix="$1" ran="$2" tmp_file="$3" skip_reason="$4"
+    if [[ "$ran" == "1" ]]; then
+        local ok down routes
+        eval "ok=\${${prefix}_OK}"; eval "down=\${${prefix}_DOWN}"; eval "routes=\${${prefix}_ROUTE_COUNT}"
+        local split="false"; [[ $routes -ge 2 ]] && split="true"
+        jq -n --argjson ok "$ok" --argjson dn "$down" --argjson rc "$routes" --argjson split "$split" --slurpfile r "$tmp_file" \
+            '{available:true, summary:{total:($ok+$dn), ok:$ok, down:$dn}, route_count:$rc, split_routing_detected:$split, results:$r[0]}'
+    else
+        jq -n --arg reason "$skip_reason" '{available:false, summary:null, route_count:0, split_routing_detected:false, results:null, reason:$reason}'
+    fi
+}
+V4_PASS_JSON="$(build_pass_obj V4 "$V4_PASS_RAN" "$TMP_V4_RESULTS" "IPv4 出口不可用")"
+V6_PASS_JSON="$(build_pass_obj V6 "$V6_PASS_RAN" "$TMP_V6_RESULTS" "${V6_SKIP_REASON:-IPv6 出口不可用或已禁用}")"
+jq -n --arg ts "$START_TS" --arg host "$HOST_NAME" --arg ver "$VERSION" --arg defegr "$DEFAULT_EGRESS" \
+    --arg v4ip "$V4_IP" --arg v4info "$V4_INFO" --arg v6ip "$V6_IP" --arg v6info "$V6_INFO" \
+    --arg v4echo "$V4_ECHO_DETAIL" --arg v6echo "$V6_ECHO_DETAIL" \
+    --argjson v4uniq "$V4_ECHO_UNIQUE" --argjson v6uniq "$V6_ECHO_UNIQUE" \
+    --argjson elapsed "$ELAPSED" --argjson v4 "$V4_PASS_JSON" --argjson v6 "$V6_PASS_JSON" \
+    '{ timestamp:$ts, host:$host, version:$ver, elapsed_seconds:$elapsed,
+       env:{ default_egress:$defegr,
+         ipv4:{ip:(if $v4ip=="" then null else $v4ip end), info:$v4info, echo_unique_count:$v4uniq, echo_detail:(if $v4echo=="" then null else $v4echo end), snat_suspected:($v4uniq>1)},
+         ipv6:{ip:(if $v6ip=="" then null else $v6ip end), info:$v6info, echo_unique_count:$v6uniq, echo_detail:(if $v6echo=="" then null else $v6echo end), snat_suspected:($v6uniq>1)} },
+       ipv4:$v4, ipv6:$v6 }' > "$FINAL_JSON"
+[[ $OUTPUT_JSON -eq 1 ]] && cat "$FINAL_JSON"
+LAST_JSON="$CACHE_DIR/last.json"
+if mv -f -- "$FINAL_JSON" "$LAST_JSON" 2>/dev/null; then chmod 600 "$LAST_JSON" 2>/dev/null || true; FINAL_JSON=""
+else err "保存 last.json 失败"; fi
+TOTAL_DOWN=$((V4_DOWN + V6_DOWN))
+[[ $V4_PASS_RAN -eq 0 && $V6_PASS_RAN -eq 0 ]] && exit 2
+[[ $TOTAL_DOWN -gt 0 ]] && exit 2
+exit 0
