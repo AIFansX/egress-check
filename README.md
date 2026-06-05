@@ -8,7 +8,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/AI-Fans-X/egress-check/main/ma
 
 `-I` 会打开交互菜单，输入 `1-6` 就能选择检测模式。以后如果你把短域名指向这个脚本，也可以做成类似 `bash <(curl -Ls https://check.place) -I` 这样的短命令。
 
-主页：[https://ip.net.coffee](https://ip.net.coffee)
+鸣谢：[https://ip.net.coffee](https://ip.net.coffee)
 
 ## 它解决什么问题
 
