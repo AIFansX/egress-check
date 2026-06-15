@@ -37,6 +37,11 @@ bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.s
 - **同时看延迟质量**：不只判断有没有分流，还能看到 VPS 到目标域名的 mtr 平均延迟。
 - **适合排查账号风控**：当社交媒体、电商、金融平台账号异常时，可以快速确认线路是否和商家承诺一致。
 
+## v2.8 修复
+
+- 修复极简系统首次运行时只自动安装 `mtr`、缺少 `jq` 后直接退出的问题
+- 现在脚本会同时检测并自动安装 `mtr` 和 `jq`，安装失败时再给出手动安装命令
+
 ## v2.7 新增
 
 - 修复分流明细行颜色：`⮜ 分流` 的整行内容保持黄色高亮，不会被延迟列颜色 reset 截断
@@ -143,14 +148,14 @@ grep -nE 'crontab|authorized_keys|nohup|disown|/dev/tcp|bash -i|curl.*\|.*sh' ip
 
 不适合直接在 Windows CMD / PowerShell 里运行；如果是 Windows，需要 WSL 这类 Linux 环境。
 
-脚本会自动检测并尝试安装 `mtr`：
+脚本会自动检测并尝试安装 `mtr` 和 `jq`：
 
 ```text
-apt-get install mtr-tiny / mtr
-apk add mtr
-yum install mtr
-dnf install mtr
-pacman -Sy mtr
+apt-get install mtr-tiny jq / mtr jq
+apk add mtr jq
+yum install mtr jq
+dnf install mtr jq
+pacman -Sy mtr jq
 ```
 
 自动安装需要满足两个条件：
@@ -160,17 +165,16 @@ pacman -Sy mtr
 
 如果没有 root/sudo，脚本会提示手动安装。
 
-以下依赖目前只检测，不自动安装：
+以下基础命令目前只检测，不自动安装：
 
 ```text
 curl
-jq
 timeout
 awk
 grep
 ```
 
-大多数 VPS 默认已有 `curl`、`awk`、`grep`、`timeout`，极简系统可能需要手动安装 `jq`。
+大多数 VPS 默认已有 `curl`、`awk`、`grep`、`timeout`，极简系统如果缺失会按提示手动补装。
 
 如果商家禁用了 ICMP / traceroute / mtr 所需能力，或者容器环境不允许 raw socket，即使依赖齐全也可能探测失败。这属于运行环境限制，不是脚本逻辑问题。
 

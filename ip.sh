@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# 家宽VPS分流一键自查检测 Egress-Check v2.7      鸣谢：https://ip.net.coffee
+# 家宽VPS分流一键自查检测 Egress-Check v2.8      鸣谢：https://ip.net.coffee
 #
 # 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
 # 不同 ASN = 不同出口线路 = 商家做了分流. 一眼看出分了几条线, 哪些域名走哪条.
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-VERSION="2.7"
+VERSION="2.8"
 BRAND_URL="https://ip.net.coffee"
 
 # ─── 颜色 ──────────────────────────────────────────────────────────────────
@@ -271,38 +271,75 @@ need() {
         exit 1
     fi
 }
-ensure_mtr() {
-    command -v mtr >/dev/null 2>&1 && return 0
+ensure_runtime_deps() {
+    local missing=()
+    local need_mtr=0 need_jq=0
+    command -v mtr >/dev/null 2>&1 || { missing+=(mtr); need_mtr=1; }
+    command -v jq >/dev/null 2>&1 || { missing+=(jq); need_jq=1; }
+    [[ ${#missing[@]} -eq 0 ]] && return 0
+
     local sudo=""
     if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
         if command -v sudo >/dev/null 2>&1; then sudo="sudo"
-        else err "需要 mtr 但当前非 root 且无 sudo. 请手动安装: apt install mtr-tiny"; exit 1; fi
+        else
+            err "缺少依赖: ${missing[*]}, 当前非 root 且无 sudo, 无法自动安装"
+            printf "    Debian/Ubuntu: apt install mtr-tiny jq\n" >&2
+            printf "    Alpine: apk add mtr jq\n" >&2
+            exit 1
+        fi
     fi
-    printf "%s[*]%s 未检测到 mtr, 正在自动安装...\n" "$BLUE" "$R" >&2
+
+    printf "%s[*]%s 未检测到依赖: %s, 正在自动安装...\n" "$BLUE" "$R" "${missing[*]}" >&2
     if command -v apt-get >/dev/null 2>&1; then
         $sudo apt-get update -qq >/dev/null 2>&1 || true
-        $sudo apt-get install -y mtr-tiny >/dev/null 2>&1 || $sudo apt-get install -y mtr >/dev/null 2>&1 || true
+        local apt_pkgs=()
+        [[ $need_mtr -eq 1 ]] && apt_pkgs+=(mtr-tiny)
+        [[ $need_jq -eq 1 ]] && apt_pkgs+=(jq)
+        $sudo apt-get install -y "${apt_pkgs[@]}" >/dev/null 2>&1 || {
+            apt_pkgs=()
+            [[ $need_mtr -eq 1 ]] && apt_pkgs+=(mtr)
+            [[ $need_jq -eq 1 ]] && apt_pkgs+=(jq)
+            $sudo apt-get install -y "${apt_pkgs[@]}" >/dev/null 2>&1 || true
+        }
     elif command -v apk >/dev/null 2>&1; then
-        $sudo apk add --no-cache mtr >/dev/null 2>&1 || true
+        local apk_pkgs=()
+        [[ $need_mtr -eq 1 ]] && apk_pkgs+=(mtr)
+        [[ $need_jq -eq 1 ]] && apk_pkgs+=(jq)
+        $sudo apk add --no-cache "${apk_pkgs[@]}" >/dev/null 2>&1 || true
     elif command -v yum >/dev/null 2>&1; then
-        $sudo yum install -y mtr >/dev/null 2>&1 || true
+        local yum_pkgs=()
+        [[ $need_mtr -eq 1 ]] && yum_pkgs+=(mtr)
+        [[ $need_jq -eq 1 ]] && yum_pkgs+=(jq)
+        $sudo yum install -y "${yum_pkgs[@]}" >/dev/null 2>&1 || true
     elif command -v dnf >/dev/null 2>&1; then
-        $sudo dnf install -y mtr >/dev/null 2>&1 || true
+        local dnf_pkgs=()
+        [[ $need_mtr -eq 1 ]] && dnf_pkgs+=(mtr)
+        [[ $need_jq -eq 1 ]] && dnf_pkgs+=(jq)
+        $sudo dnf install -y "${dnf_pkgs[@]}" >/dev/null 2>&1 || true
     elif command -v pacman >/dev/null 2>&1; then
-        $sudo pacman -Sy --noconfirm mtr >/dev/null 2>&1 || true
+        local pacman_pkgs=()
+        [[ $need_mtr -eq 1 ]] && pacman_pkgs+=(mtr)
+        [[ $need_jq -eq 1 ]] && pacman_pkgs+=(jq)
+        $sudo pacman -Sy --noconfirm "${pacman_pkgs[@]}" >/dev/null 2>&1 || true
     fi
-    if command -v mtr >/dev/null 2>&1; then
-        printf "%s[+]%s mtr 安装成功\n" "$GREEN" "$R" >&2
-        [[ -n "$sudo" || ${EUID:-$(id -u)} -eq 0 ]] && \
-            { ${sudo} setcap cap_net_raw+ep "$(command -v mtr)" >/dev/null 2>&1 || true; }
+
+    local still_missing=()
+    command -v mtr >/dev/null 2>&1 || still_missing+=(mtr)
+    command -v jq >/dev/null 2>&1 || still_missing+=(jq)
+    if [[ ${#still_missing[@]} -eq 0 ]]; then
+        printf "%s[+]%s 依赖安装成功: %s\n" "$GREEN" "$R" "${missing[*]}" >&2
+        { ${sudo} setcap cap_net_raw+ep "$(command -v mtr)" >/dev/null 2>&1 || true; }
         return 0
     fi
-    err "mtr 自动安装失败, 请手动: apt install mtr-tiny / apk add mtr"
+
+    err "依赖自动安装失败: ${still_missing[*]}"
+    printf "    Debian/Ubuntu: apt install mtr-tiny jq\n" >&2
+    printf "    Alpine: apk add mtr jq\n" >&2
+    printf "    CentOS/RHEL: yum install mtr jq\n" >&2
     exit 1
 }
-ensure_mtr
+ensure_runtime_deps
 need curl    "apt install curl"
-need jq      "apt install jq"
 need timeout "coreutils"
 need awk
 need grep
