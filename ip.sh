@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# 家宽VPS分流一键自查检测 Egress-Check v2.9      鸣谢：https://ip.net.coffee
+# 家宽VPS分流一键自查检测 Egress-Check v2.10      鸣谢：https://ip.net.coffee
 #
 # 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
 # 不同 ASN = 不同出口线路 = 商家做了分流. 一眼看出分了几条线, 哪些域名走哪条.
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-VERSION="2.9"
+VERSION="2.10"
 BRAND_URL="https://ip.net.coffee"
 
 # ─── 颜色 ──────────────────────────────────────────────────────────────────
@@ -569,17 +569,27 @@ first_public_hop() {
             parsed=$(printf '%s\n' "$output" | awk '
                 function private_v6(ip) { return (ip ~ /^[Ff][Ee]80:/ || ip ~ /^[Ff][CcDd]/ || ip == "::1") }
                 function valid_avg(v) { return (v ~ /^[0-9]+([.][0-9]+)?$/) }
-                /^[[:space:]]*[0-9]+[.|]/ {
+                {
+                    line=$0
+                    gsub(/\r/, "", line)
+                    gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, "", line)
+                    if (line !~ /(^|[[:space:]])[0-9]+[.|]/) next
+                    $0=line
                     row_avg="-"
+                    found_ip=0
                     for (i=1; i<=NF; i++) {
-                        if ($i ~ /^([0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F:]+$/) {
+                        ip=$i
+                        gsub(/^[^0-9a-fA-F:.]+/, "", ip)
+                        gsub(/[^0-9a-fA-F:.]+$/, "", ip)
+                        if (ip ~ /^([0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F:]+$/) {
                             avg=$(i+4)
-                            if (!private_v6($i) && first_hop == "") first_hop=$i
+                            if (!private_v6(ip) && first_hop == "") first_hop=ip
                             if (valid_avg(avg)) row_avg=avg
+                            found_ip=1
                             break
                         }
                     }
-                    target_avg=row_avg
+                    if (found_ip) target_avg=row_avg
                 }
                 END {
                     if (first_hop != "") {
@@ -591,17 +601,27 @@ first_public_hop() {
             parsed=$(printf '%s\n' "$output" | awk '
                 function private_v4(ip) { return (ip ~ /^10\./ || ip ~ /^192\.168\./ || ip ~ /^172\.(1[6-9]|2[0-9]|3[0-1])\./ || ip ~ /^127\./ || ip ~ /^100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\./ || ip ~ /^169\.254\./ || ip ~ /^0\./ || ip ~ /^22[4-9]\./ || ip ~ /^2[3-5][0-9]\./) }
                 function valid_avg(v) { return (v ~ /^[0-9]+([.][0-9]+)?$/) }
-                /^[[:space:]]*[0-9]+[.|]/ {
+                {
+                    line=$0
+                    gsub(/\r/, "", line)
+                    gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, "", line)
+                    if (line !~ /(^|[[:space:]])[0-9]+[.|]/) next
+                    $0=line
                     row_avg="-"
+                    found_ip=0
                     for (i=1; i<=NF; i++) {
-                        if ($i ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/) {
+                        ip=$i
+                        gsub(/^[^0-9.]+/, "", ip)
+                        gsub(/[^0-9.]+$/, "", ip)
+                        if (ip ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/) {
                             avg=$(i+4)
-                            if (!private_v4($i) && first_hop == "") first_hop=$i
+                            if (!private_v4(ip) && first_hop == "") first_hop=ip
                             if (valid_avg(avg)) row_avg=avg
+                            found_ip=1
                             break
                         }
                     }
-                    target_avg=row_avg
+                    if (found_ip) target_avg=row_avg
                 }
                 END {
                     if (first_hop != "") {
