@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# 家宽VPS分流一键自查检测 Egress-Check v2.10      鸣谢：https://ip.net.coffee
+# 家宽VPS分流一键自查检测 Egress-Check v2.11      鸣谢：https://ip.net.coffee
 #
 # 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
 # 不同 ASN = 不同出口线路 = 商家做了分流. 一眼看出分了几条线, 哪些域名走哪条.
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-VERSION="2.10"
+VERSION="2.11"
 BRAND_URL="https://ip.net.coffee"
 
 # ─── 颜色 ──────────────────────────────────────────────────────────────────
@@ -58,6 +58,7 @@ MTR_TIMEOUT=20
 MTR_MAXTTL=30
 MTR_COUNT=3
 MTR_ATTEMPTS=4
+PATH_SUMMARY_LIMIT="${PATH_SUMMARY_LIMIT:-8}"
 API_TIMEOUT=5
 ENV_TIMEOUT=5
 IP_LOOKUP_CACHE_TTL="${IP_LOOKUP_CACHE_TTL:-86400}"
@@ -561,7 +562,7 @@ ip_family() {
 }
 
 first_public_hop() {
-    local ip_flag="$1" domain="$2" output attempt parsed ip latency
+    local ip_flag="$1" domain="$2" output attempt parsed ip latency path_ips
     is_valid_domain "$domain" || { printf ''; return; }
     for ((attempt=1; attempt<=MTR_ATTEMPTS; attempt++)); do
         output=$(timeout "$MTR_TIMEOUT" mtr "$ip_flag" -r -n -c "$MTR_COUNT" -m "$MTR_MAXTTL" "$domain" 2>/dev/null || true)
@@ -583,7 +584,13 @@ first_public_hop() {
                         gsub(/[^0-9a-fA-F:.]+$/, "", ip)
                         if (ip ~ /^([0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F:]+$/) {
                             avg=$(i+4)
-                            if (!private_v6(ip) && first_hop == "") first_hop=ip
+                            if (!private_v6(ip)) {
+                                if (first_hop == "") first_hop=ip
+                                if (ip != last_public_ip) {
+                                    path_ips = (path_ips == "" ? ip : path_ips " " ip)
+                                    last_public_ip = ip
+                                }
+                            }
                             if (valid_avg(avg)) row_avg=avg
                             found_ip=1
                             break
@@ -594,7 +601,7 @@ first_public_hop() {
                 END {
                     if (first_hop != "") {
                         if (target_avg == "") target_avg="-"
-                        print first_hop "\t" target_avg
+                        print first_hop "\t" target_avg "\t" path_ips
                     }
                 }')
         else
@@ -615,7 +622,13 @@ first_public_hop() {
                         gsub(/[^0-9.]+$/, "", ip)
                         if (ip ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/) {
                             avg=$(i+4)
-                            if (!private_v4(ip) && first_hop == "") first_hop=ip
+                            if (!private_v4(ip)) {
+                                if (first_hop == "") first_hop=ip
+                                if (ip != last_public_ip) {
+                                    path_ips = (path_ips == "" ? ip : path_ips " " ip)
+                                    last_public_ip = ip
+                                }
+                            }
                             if (valid_avg(avg)) row_avg=avg
                             found_ip=1
                             break
@@ -626,13 +639,13 @@ first_public_hop() {
                 END {
                     if (first_hop != "") {
                         if (target_avg == "") target_avg="-"
-                        print first_hop "\t" target_avg
+                        print first_hop "\t" target_avg "\t" path_ips
                     }
                 }')
         fi
         if [[ -n "$parsed" ]]; then
-            IFS=$'\t' read -r ip latency <<< "$parsed"
-            [[ -n "$ip" ]] && { printf '%s\t%s' "$ip" "${latency:-"-"}"; return; }
+            IFS=$'\t' read -r ip latency path_ips <<< "$parsed"
+            [[ -n "$ip" ]] && { printf '%s\t%s\t%s' "$ip" "${latency:-"-"}" "$path_ips"; return; }
         fi
         sleep "$attempt"
     done
@@ -744,6 +757,33 @@ format_latency() {
     printf '%s%s%s' "$color" "$text" "$R"
 }
 
+short_text() {
+    local text="$1" width="${2:-58}"
+    if (( ${#text} > width )); then
+        printf '%s...' "${text:0:$((width-3))}"
+    else
+        printf '%s' "$text"
+    fi
+}
+
+path_asn_chain() {
+    local path_ips="$1" ip data asn isp country prev_asn="" label chain=""
+    for ip in $path_ips; do
+        data="$(lookup_ip "$ip" || true)"
+        split_lookup_data "$data" asn isp country
+        normalize_lookup_fields asn isp country
+        [[ -z "$asn" ]] && continue
+        [[ "$asn" == "$prev_asn" ]] && continue
+        prev_asn="$asn"
+        label="AS$asn"
+        if [[ -n "$isp" && "$isp" != "Unknown" ]]; then
+            label+=" $(short_text "$isp" 22)"
+        fi
+        if [[ -z "$chain" ]]; then chain="$label"; else chain+=" -> $label"; fi
+    done
+    printf '%s' "$chain"
+}
+
 print_result_row() {
     [[ $OUTPUT_JSON -eq 1 ]] && return 0
     local marker="$1" domain="$2" ip="$3" latency="$4" cc="$5" asn="$6" isp="$7" is_split="${8:-0}" asn_isp latency_disp
@@ -815,6 +855,8 @@ run_check_pass() {
     printf '[\n' > "$tmp_file"
     local first_json=1
     local -A route_isp=() route_cc=() route_domains=() route_split=() route_scidx=() hop_lookup=()
+    local -A path_domains=() path_counts=()
+    local -a path_order=()
     local split_idx=0 split_domain_count=0
     local cat
     for cat in "${cat_order[@]}"; do
@@ -824,16 +866,16 @@ run_check_pass() {
         local idx
         for idx in "${gidxs[@]}"; do
         local cat_v="$cat" domain="${DOMAINS[$idx]}" note="${NOTES[$idx]}"
-        local hop_line hop latency
+        local hop_line hop latency path_ips
         hop_line="$(cat "$out_dir/$idx" 2>/dev/null || true)"
-        IFS=$'\t' read -r hop latency <<< "$hop_line"
+        IFS=$'\t' read -r hop latency path_ips <<< "$hop_line"
         latency="${latency:-"-"}"
         if [[ -z "$hop" ]]; then
             eval "${prefix}_DOWN=\$((${prefix}_DOWN+1))"
             [[ $OUTPUT_JSON -eq 0 ]] && print_result_row "$SYM_DOWN" "$domain" "-" "-" "-" "" "探测失败 / 无公网跳" 0
             [[ $first_json -eq 0 ]] && printf ',\n' >> "$tmp_file"; first_json=0
             jq -n --arg c "$cat_v" --arg d "$domain" --arg note "$note" \
-                '{category:$c, domain:$d, status:"down", first_hop:null, latency_ms:null, asn:null, isp:null, country:null, split:null, note:$note}' >> "$tmp_file"
+                '{category:$c, domain:$d, status:"down", first_hop:null, latency_ms:null, path_asn_chain:null, asn:null, isp:null, country:null, split:null, note:$note}' >> "$tmp_file"
             continue
         fi
         local data asn isp country
@@ -857,6 +899,19 @@ run_check_pass() {
             if [[ $is_split -eq 1 ]]; then route_scidx[$key]=$split_idx; split_idx=$((split_idx+1)); else route_scidx[$key]=-1; fi
         else route_domains[$key]+=" $domain"; fi
         [[ $is_split -eq 1 ]] && split_domain_count=$((split_domain_count+1))
+        local path_chain path_asn_ips
+        path_asn_ips="$path_ips"
+        [[ "$path_asn_ips" == *" "* ]] && path_asn_ips="${path_asn_ips% *}"
+        path_chain="$(path_asn_chain "$path_asn_ips")"
+        if [[ -n "$path_chain" ]]; then
+            if [[ -z "${path_counts[$path_chain]+x}" ]]; then
+                path_order+=("$path_chain")
+                path_counts[$path_chain]=0
+                path_domains[$path_chain]=""
+            fi
+            path_counts[$path_chain]=$((path_counts[$path_chain]+1))
+            path_domains[$path_chain]+="$domain "
+        fi
         local marker
         if [[ $is_split -eq 1 ]]; then marker="${SPLIT_COLORS[${route_scidx[$key]} % split_color_n]}●${R}"; else marker="${GREEN}●${R}"; fi
         [[ $OUTPUT_JSON -eq 0 ]] && print_result_row "$marker" "$domain" "$hop" "$latency" "$country" "$asn" "$isp" "$is_split"
@@ -864,11 +919,11 @@ run_check_pass() {
         local split_json="false"; [[ $is_split -eq 1 ]] && split_json="true"
         local latency_json="null"; [[ "$latency" =~ ^[0-9]+([.][0-9]+)?$ ]] && latency_json="$latency"
         if [[ -z "$asn" ]]; then
-            jq -n --arg c "$cat_v" --arg d "$domain" --arg h "$hop" --argjson lat "$latency_json" --arg isp "$isp" --arg cc "$country" --argjson sp "$split_json" --arg note "$note" \
-                '{category:$c, domain:$d, status:"ok", first_hop:$h, latency_ms:$lat, asn:null, isp:$isp, country:$cc, split:$sp, note:$note}' >> "$tmp_file"
+            jq -n --arg c "$cat_v" --arg d "$domain" --arg h "$hop" --argjson lat "$latency_json" --arg chain "$path_chain" --arg isp "$isp" --arg cc "$country" --argjson sp "$split_json" --arg note "$note" \
+                '{category:$c, domain:$d, status:"ok", first_hop:$h, latency_ms:$lat, path_asn_chain:($chain | if . == "" then null else . end), asn:null, isp:$isp, country:$cc, split:$sp, note:$note}' >> "$tmp_file"
         else
-            jq -n --arg c "$cat_v" --arg d "$domain" --arg h "$hop" --argjson lat "$latency_json" --arg asn "$asn" --arg isp "$isp" --arg cc "$country" --argjson sp "$split_json" --arg note "$note" \
-                '{category:$c, domain:$d, status:"ok", first_hop:$h, latency_ms:$lat, asn:("AS"+$asn), isp:$isp, country:$cc, split:$sp, note:$note}' >> "$tmp_file"
+            jq -n --arg c "$cat_v" --arg d "$domain" --arg h "$hop" --argjson lat "$latency_json" --arg chain "$path_chain" --arg asn "$asn" --arg isp "$isp" --arg cc "$country" --argjson sp "$split_json" --arg note "$note" \
+                '{category:$c, domain:$d, status:"ok", first_hop:$h, latency_ms:$lat, path_asn_chain:($chain | if . == "" then null else . end), asn:("AS"+$asn), isp:$isp, country:$cc, split:$sp, note:$note}' >> "$tmp_file"
         fi
         done
     done
@@ -912,6 +967,31 @@ run_check_pass() {
             printf "  %s%s %s检测到分流: %d 条非默认线路, %d 个域名被分流到其他出口%s\n" "$BOLD" "$SYM_WARN" "$YELLOW" "$split_idx" "$split_domain_count" "$R"
         else
             printf "  %s%s %s所有域名走同一出口 (AS%s) — 未检测到分流%s\n" "$BOLD" "$SYM_INFO" "$GREEN" "${base_asn:-?}" "$R"
+        fi
+
+        if [[ ${#path_order[@]} -gt 0 ]]; then
+            local max_paths="$PATH_SUMMARY_LIMIT"
+            [[ "$max_paths" =~ ^[0-9]+$ ]] || max_paths=8
+            (( max_paths < 1 )) && max_paths=1
+            printf "\n  %s%s 路径 ASN 摘要%s  %s(辅助观察, 不直接等同分流)%s\n" "$BOLD" "$label" "$R" "$DIM" "$R"
+            printf "  %s\n" "$(rule_single 72)"
+            local chain shown=0
+            for chain in "${path_order[@]}"; do
+                (( shown >= max_paths )) && break
+                shown=$((shown+1))
+                local chain_disp dlist d cnt=0 lineout="      "
+                chain_disp="$(short_text "$chain" 58)"
+                dlist="${path_domains[$chain]}"
+                printf "    %s%-58s%s  %s%2d 域名%s\n" "$CYAN" "$chain_disp" "$R" "$BOLD" "${path_counts[$chain]}" "$R"
+                for d in $dlist; do
+                    lineout+="$d  "; cnt=$((cnt+1))
+                    if [[ $cnt -eq 4 ]]; then printf "%s%s%s\n" "$DIM" "$lineout" "$R"; lineout="      "; cnt=0; fi
+                done
+                [[ $cnt -gt 0 ]] && printf "%s%s%s\n" "$DIM" "$lineout" "$R"
+            done
+            if (( ${#path_order[@]} > shown )); then
+                printf "      %s另有 %d 条路径模式未展开，可设置 PATH_SUMMARY_LIMIT 调整显示数量%s\n" "$DIM" "$((${#path_order[@]}-shown))" "$R"
+            fi
         fi
     fi
 }
