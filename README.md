@@ -37,6 +37,13 @@ bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.s
 - **同时看延迟质量**：不只判断有没有分流，还能看到 VPS 到目标域名的 mtr 平均延迟。
 - **适合排查账号风控**：当社交媒体、电商、金融平台账号异常时，可以快速确认线路是否和商家承诺一致。
 
+## v2.13 修复
+
+- 修复 NAT / 隧道 / 代理拓扑下，HTTP 真实出口是家宽 ASN，但 `mtr` 首个公网跳是上游 VPS ASN，导致所有域名被误标为“分流”的问题
+- 自动模式下如果 HTTP 出口 ASN 和 MTR 主路径 ASN 不一致，会提示 NAT/隧道拓扑，并按 MTR 主路径 ASN 判断域名之间是否分流
+- 网络环境区新增 `IPv4 MTR` / `IPv6 MTR` 基准跳展示，方便区分“真实对外 IP”和“mtr 路由路径”
+- 可用 `EGRESS_BASE_MODE=echo` 强制按 HTTP 出口 ASN 判断，或用 `EGRESS_BASE_MODE=mtr` 强制按 MTR 主路径 ASN 判断
+
 ## v2.12 修复
 
 - 修复部分机器上 `mtr -r -n` report 输出为空或格式不同，导致交互 `mtr` 正常但脚本仍显示“探测失败 / 无公网跳”的问题
@@ -133,6 +140,8 @@ cp rules.conf.example rules.conf
 
 MTR_CONCURRENCY=10 ./ip.sh
 IP_LOOKUP_CACHE_TTL=3600 ./ip.sh
+EGRESS_BASE_MODE=mtr ./ip.sh
+EGRESS_BASE_MODE=echo ./ip.sh
 ```
 
 如果遇到手动 `mtr` 正常、脚本却显示“探测失败 / 无公网跳”，可以开启调试：

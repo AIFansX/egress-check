@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# 家宽VPS分流一键自查检测 Egress-Check v2.12      鸣谢：https://ip.net.coffee
+# 家宽VPS分流一键自查检测 Egress-Check v2.13      鸣谢：https://ip.net.coffee
 #
 # 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
 # 不同 ASN = 不同出口线路 = 商家做了分流. 一眼看出分了几条线, 哪些域名走哪条.
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-VERSION="2.12"
+VERSION="2.13"
 BRAND_URL="https://ip.net.coffee"
 
 # ─── 颜色 ──────────────────────────────────────────────────────────────────
@@ -59,6 +59,8 @@ MTR_MAXTTL=30
 MTR_COUNT=3
 MTR_ATTEMPTS=4
 PATH_SUMMARY_LIMIT="${PATH_SUMMARY_LIMIT:-8}"
+MTR_BASE_DOMAIN="${MTR_BASE_DOMAIN:-google.com}"
+EGRESS_BASE_MODE="${EGRESS_BASE_MODE:-auto}"
 API_TIMEOUT=5
 ENV_TIMEOUT=5
 IP_LOOKUP_CACHE_TTL="${IP_LOOKUP_CACHE_TTL:-86400}"
@@ -673,6 +675,23 @@ first_public_hop() {
     done
 }
 
+detect_mtr_base_asn() {
+    local ip_flag="$1" prefix="$2" hop_line hop latency path_ips data asn isp country info
+    hop_line="$(first_public_hop "$ip_flag" "$MTR_BASE_DOMAIN" || true)"
+    IFS=$'\t' read -r hop latency path_ips <<< "$hop_line"
+    [[ -n "$hop" ]] || return 1
+    data="$(lookup_ip "$hop" || true)"
+    split_lookup_data "$data" asn isp country
+    normalize_lookup_fields asn isp country
+    [[ -n "$asn" ]] || return 1
+    [[ -z "$country" ]] && country="??"
+    [[ -z "$isp" ]] && isp="Unknown"
+    info="$country · AS$asn $isp"
+    printf -v "${prefix}_MTR_BASE_ASN" '%s' "$asn"
+    printf -v "${prefix}_MTR_BASE_HOP" '%s' "$hop"
+    printf -v "${prefix}_MTR_BASE_INFO" '%s' "$info"
+}
+
 declare -a CATS DOMAINS NOTES
 parse_rules() {
 local line source="$1"
@@ -730,8 +749,14 @@ print_env_section() {
     esac
     if [[ -n "$v4" ]]; then printf "    IPv4 出口    %s%s%s  %s%s%s\n" "$BOLD" "$v4" "$R" "$DIM" "$v4info" "$R"
     else printf "    IPv4 出口    %s不可用%s\n" "$RED" "$R"; fi
+    if [[ -n "${V4_MTR_BASE_ASN:-}" ]]; then
+        printf "    IPv4 MTR     %s%s%s  %s%s%s\n" "$BOLD" "$V4_MTR_BASE_HOP" "$R" "$DIM" "$V4_MTR_BASE_INFO" "$R"
+    fi
     if [[ -n "$v6" ]]; then printf "    IPv6 出口    %s%s%s  %s%s%s\n" "$BOLD" "$v6" "$R" "$DIM" "$v6info" "$R"
     else printf "    IPv6 出口    %s不可用 / 已禁用%s\n" "$YELLOW" "$R"; fi
+    if [[ -n "${V6_MTR_BASE_ASN:-}" ]]; then
+        printf "    IPv6 MTR     %s%s%s  %s%s%s\n" "$BOLD" "$V6_MTR_BASE_HOP" "$R" "$DIM" "$V6_MTR_BASE_INFO" "$R"
+    fi
     local item
     if [[ -n "$v4" && $V4_ECHO_UNIQUE -gt 1 ]]; then
         printf "\n    %s%s 商家 SNAT 嫌疑%s — %s%d 个回声服务看到不同对外 IP%s\n" "$RED" "$SYM_WARN" "$R" "$DIM" "$V4_ECHO_UNIQUE" "$R"
@@ -857,15 +882,37 @@ run_mtr_group() {
 }
 
 run_check_pass() {
-    local label="$1" ip_flag="$2" tmp_file="$3" prefix base_asn
+    local label="$1" ip_flag="$2" tmp_file="$3" prefix base_asn mtr_base_asn effective_base_asn base_desc topology_note
     case "$label" in
-        IPv4) prefix=V4; base_asn="${V4_BASE_ASN:-}" ;;
-        IPv6) prefix=V6; base_asn="${V6_BASE_ASN:-}" ;;
+        IPv4) prefix=V4; base_asn="${V4_BASE_ASN:-}"; mtr_base_asn="${V4_MTR_BASE_ASN:-}" ;;
+        IPv6) prefix=V6; base_asn="${V6_BASE_ASN:-}"; mtr_base_asn="${V6_MTR_BASE_ASN:-}" ;;
+    esac
+    effective_base_asn="$base_asn"
+    base_desc="默认出口 ${base_asn:+AS$base_asn}"
+    case "$EGRESS_BASE_MODE" in
+        echo) ;;
+        mtr)
+            if [[ -n "$mtr_base_asn" ]]; then
+                effective_base_asn="$mtr_base_asn"
+                base_desc="MTR主路径 AS$mtr_base_asn"
+            fi
+            ;;
+        auto|*)
+            if [[ -n "$base_asn" && -n "$mtr_base_asn" && "$base_asn" != "$mtr_base_asn" ]]; then
+                effective_base_asn="$mtr_base_asn"
+                base_desc="MTR主路径 AS$mtr_base_asn"
+                topology_note="检测到 NAT/隧道拓扑: HTTP出口 AS$base_asn, MTR主路径 AS$mtr_base_asn; 本轮按 MTR主路径判断分流"
+            fi
+            ;;
     esac
     eval "${prefix}_OK=0"; eval "${prefix}_DOWN=0"
     local SPLIT_COLORS=( "$YELLOW" "$MAGENTA" "$RED" "$CYAN" )
     local split_color_n=4
     print_pass_header "$label"
+    if [[ $OUTPUT_JSON -eq 0 && -n "${topology_note:-}" ]]; then
+        printf "    %s %s%s%s\n" "$SYM_INFO" "$CYAN" "$topology_note" "$R"
+        printf "      %sHTTP出口仍用于展示真实对外 IP；MTR 用于比较不同域名的路由路径%s\n" "$DIM" "$R"
+    fi
     local out_dir; out_dir="$(mktemp -d "$CACHE_DIR/.mtrout.XXXXXX")"
     local -A cat_idxs=(); local -a cat_order=()
     local gi
@@ -913,7 +960,7 @@ run_check_pass() {
         [[ -z "${hop_lookup[$hop]+set}" && "$(lookup_score "$data")" -ge 3 ]] && hop_lookup[$hop]="$data"
         eval "${prefix}_OK=\$((${prefix}_OK+1))"
         local is_split=0
-        [[ -n "$base_asn" && -n "$asn" && "$asn" != "$base_asn" ]] && is_split=1
+        [[ -n "$effective_base_asn" && -n "$asn" && "$asn" != "$effective_base_asn" ]] && is_split=1
         local key="$asn"; [[ -z "$key" ]] && key="ip:$hop"
         if [[ -z "${route_split[$key]+x}" ]]; then
             route_isp[$key]="$isp"; route_cc[$key]="$country"
@@ -956,7 +1003,7 @@ run_check_pass() {
     eval "${prefix}_SPLIT_DOMAINS=$split_domain_count"
     if [[ $OUTPUT_JSON -eq 0 && $route_count -gt 0 ]]; then
         printf "\n  %s\n" "$(rule_single 72)"
-        printf "  %s%s 线路分流汇总%s  %s(基准 = 默认出口 %s)%s\n" "$BOLD" "$label" "$R" "$DIM" "${base_asn:+AS$base_asn}" "$R"
+        printf "  %s%s 线路分流汇总%s  %s(基准 = %s)%s\n" "$BOLD" "$label" "$R" "$DIM" "$base_desc" "$R"
         printf "  %s\n" "$(rule_single 72)"
         local key round
         for round in base split; do
@@ -988,7 +1035,7 @@ run_check_pass() {
         if [[ $split_idx -ge 1 ]]; then
             printf "  %s%s %s检测到分流: %d 条非默认线路, %d 个域名被分流到其他出口%s\n" "$BOLD" "$SYM_WARN" "$YELLOW" "$split_idx" "$split_domain_count" "$R"
         else
-            printf "  %s%s %s所有域名走同一出口 (AS%s) — 未检测到分流%s\n" "$BOLD" "$SYM_INFO" "$GREEN" "${base_asn:-?}" "$R"
+            printf "  %s%s %s所有域名走同一出口 (AS%s) — 未检测到分流%s\n" "$BOLD" "$SYM_INFO" "$GREEN" "${effective_base_asn:-?}" "$R"
         fi
 
         if [[ ${#path_order[@]} -gt 0 ]]; then
@@ -1027,6 +1074,8 @@ V4_PASS_RAN=0; V6_PASS_RAN=0; V4_ECHO_UNIQUE=0; V6_ECHO_UNIQUE=0
 V4_ECHO_DETAIL=""; V6_ECHO_DETAIL=""; DEFAULT_EGRESS="none"
 V4_IP=""; V6_IP=""; V4_INFO="—"; V6_INFO="—"
 V4_BASE_ASN=""; V6_BASE_ASN=""; V4_SPLIT_DOMAINS=0; V6_SPLIT_DOMAINS=0
+V4_MTR_BASE_ASN=""; V4_MTR_BASE_HOP=""; V4_MTR_BASE_INFO="—"
+V6_MTR_BASE_ASN=""; V6_MTR_BASE_HOP=""; V6_MTR_BASE_INFO="—"
 [[ $OUTPUT_JSON -eq 0 ]] && print_banner "$HOST_NAME" "$START_TS"
 do_env_detect() {
     local a c d i def_ip line ip ep
@@ -1062,6 +1111,12 @@ do_env_detect() {
     elif [[ "$PASS_MODE" == "v6-only" ]]; then DEFAULT_EGRESS="ipv6"; fi
 }
 do_env_detect
+if [[ -n "$V4_IP" && ( "$PASS_MODE" == "auto" || "$PASS_MODE" == "v4-only" ) ]]; then
+    detect_mtr_base_asn "-4" "V4" || true
+fi
+if [[ -n "$V6_IP" && ( "$PASS_MODE" == "auto" || "$PASS_MODE" == "v6-only" ) ]]; then
+    detect_mtr_base_asn "-6" "V6" || true
+fi
 [[ $OUTPUT_JSON -eq 0 && "$PASS_MODE" == "auto" ]] && print_env_section "$DEFAULT_EGRESS" "$V4_IP" "$V6_IP" "$V4_INFO" "$V6_INFO"
 [[ $OUTPUT_JSON -eq 0 ]] && printf "\n  %s共 %d 个域名, 按分类逐组检测 (绿●=默认出口, 彩色●=分流)%s\n" "$DIM" "$TOTAL" "$R"
 TMP_V4_RESULTS="$(mktemp "$CACHE_DIR/.tmp-v4.XXXXXXXX")"
