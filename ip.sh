@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# 家宽VPS分流一键自查检测 Egress-Check v2.11      鸣谢：https://ip.net.coffee
+# 家宽VPS分流一键自查检测 Egress-Check v2.12      鸣谢：https://ip.net.coffee
 #
 # 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
 # 不同 ASN = 不同出口线路 = 商家做了分流. 一眼看出分了几条线, 哪些域名走哪条.
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-VERSION="2.11"
+VERSION="2.12"
 BRAND_URL="https://ip.net.coffee"
 
 # ─── 颜色 ──────────────────────────────────────────────────────────────────
@@ -562,11 +562,32 @@ ip_family() {
 }
 
 first_public_hop() {
-    local ip_flag="$1" domain="$2" output attempt parsed ip latency path_ips
+    local ip_flag="$1" domain="$2" output attempt parsed ip latency path_ips mode cmd_text
     is_valid_domain "$domain" || { printf ''; return; }
     for ((attempt=1; attempt<=MTR_ATTEMPTS; attempt++)); do
-        output=$(timeout "$MTR_TIMEOUT" mtr "$ip_flag" -r -n -c "$MTR_COUNT" -m "$MTR_MAXTTL" "$domain" 2>/dev/null || true)
-        if [[ "$ip_flag" == "-6" ]]; then
+        for mode in numeric names; do
+            if [[ "$mode" == "numeric" ]]; then
+                cmd_text="mtr $ip_flag -r -n -c $MTR_COUNT -m $MTR_MAXTTL $domain"
+                output=$(timeout "$MTR_TIMEOUT" mtr "$ip_flag" -r -n -c "$MTR_COUNT" -m "$MTR_MAXTTL" "$domain" 2>/dev/null || true)
+            else
+                cmd_text="mtr $ip_flag -r -c $MTR_COUNT -m $MTR_MAXTTL $domain"
+                output=$(timeout "$MTR_TIMEOUT" mtr "$ip_flag" -r -c "$MTR_COUNT" -m "$MTR_MAXTTL" "$domain" 2>/dev/null || true)
+            fi
+            if [[ "${EGRESS_DEBUG_MTR:-0}" == "1" ]]; then
+                local dbg_dir dbg_file safe_domain
+                dbg_dir="$CACHE_DIR/mtr-debug"
+                install -d -m 700 "$dbg_dir" 2>/dev/null || true
+                safe_domain="$(printf '%s' "$domain" | sed 's/[^A-Za-z0-9_.-]/_/g')"
+                dbg_file="$dbg_dir/${ip_flag#-}-${safe_domain}-${mode}.txt"
+                {
+                    printf 'command: %s\nattempt: %s\n--- output ---\n' "$cmd_text" "$attempt"
+                    printf '%s\n' "$output"
+                } > "$dbg_file" 2>/dev/null || true
+            fi
+            if [[ -z "$output" ]]; then
+                continue
+            fi
+            if [[ "$ip_flag" == "-6" ]]; then
             parsed=$(printf '%s\n' "$output" | awk '
                 function private_v6(ip) { return (ip ~ /^[Ff][Ee]80:/ || ip ~ /^[Ff][CcDd]/ || ip == "::1") }
                 function valid_avg(v) { return (v ~ /^[0-9]+([.][0-9]+)?$/) }
@@ -574,7 +595,7 @@ first_public_hop() {
                     line=$0
                     gsub(/\r/, "", line)
                     gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, "", line)
-                    if (line !~ /(^|[[:space:]])[0-9]+[.|]/) next
+                    if (line !~ /[0-9]+([.][0-9]+)?%/) next
                     $0=line
                     row_avg="-"
                     found_ip=0
@@ -604,7 +625,7 @@ first_public_hop() {
                         print first_hop "\t" target_avg "\t" path_ips
                     }
                 }')
-        else
+            else
             parsed=$(printf '%s\n' "$output" | awk '
                 function private_v4(ip) { return (ip ~ /^10\./ || ip ~ /^192\.168\./ || ip ~ /^172\.(1[6-9]|2[0-9]|3[0-1])\./ || ip ~ /^127\./ || ip ~ /^100\.(6[4-9]|[7-9][0-9]|1[0-1][0-9]|12[0-7])\./ || ip ~ /^169\.254\./ || ip ~ /^0\./ || ip ~ /^22[4-9]\./ || ip ~ /^2[3-5][0-9]\./) }
                 function valid_avg(v) { return (v ~ /^[0-9]+([.][0-9]+)?$/) }
@@ -612,7 +633,7 @@ first_public_hop() {
                     line=$0
                     gsub(/\r/, "", line)
                     gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, "", line)
-                    if (line !~ /(^|[[:space:]])[0-9]+[.|]/) next
+                    if (line !~ /[0-9]+([.][0-9]+)?%/) next
                     $0=line
                     row_avg="-"
                     found_ip=0
@@ -642,11 +663,12 @@ first_public_hop() {
                         print first_hop "\t" target_avg "\t" path_ips
                     }
                 }')
-        fi
-        if [[ -n "$parsed" ]]; then
-            IFS=$'\t' read -r ip latency path_ips <<< "$parsed"
-            [[ -n "$ip" ]] && { printf '%s\t%s\t%s' "$ip" "${latency:-"-"}" "$path_ips"; return; }
-        fi
+            fi
+            if [[ -n "$parsed" ]]; then
+                IFS=$'\t' read -r ip latency path_ips <<< "$parsed"
+                [[ -n "$ip" ]] && { printf '%s\t%s\t%s' "$ip" "${latency:-"-"}" "$path_ips"; return; }
+            fi
+        done
         sleep "$attempt"
     done
 }

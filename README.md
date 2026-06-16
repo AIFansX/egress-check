@@ -37,6 +37,13 @@ bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.s
 - **同时看延迟质量**：不只判断有没有分流，还能看到 VPS 到目标域名的 mtr 平均延迟。
 - **适合排查账号风控**：当社交媒体、电商、金融平台账号异常时，可以快速确认线路是否和商家承诺一致。
 
+## v2.12 修复
+
+- 修复部分机器上 `mtr -r -n` report 输出为空或格式不同，导致交互 `mtr` 正常但脚本仍显示“探测失败 / 无公网跳”的问题
+- 解析逻辑改为识别带 `Loss%` 的真实 hop 行，不再依赖固定跳点编号格式
+- 数字 report 模式解析失败后，会自动回退到非数字 report 模式
+- 新增 `EGRESS_DEBUG_MTR=1` 调试开关，可保存脚本实际执行的 mtr 原始输出
+
 ## v2.11 新增
 
 - 新增“路径 ASN 摘要”：在主表下方按到达目标前的 ASN 链路分组展示路径变化，辅助观察是否存在中途转接
@@ -126,6 +133,13 @@ cp rules.conf.example rules.conf
 
 MTR_CONCURRENCY=10 ./ip.sh
 IP_LOOKUP_CACHE_TTL=3600 ./ip.sh
+```
+
+如果遇到手动 `mtr` 正常、脚本却显示“探测失败 / 无公网跳”，可以开启调试：
+
+```bash
+EGRESS_DEBUG_MTR=1 bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.sh) --only AI
+ls -la ~/.cache/egress-check/mtr-debug/
 ```
 
 `rules.conf` 语法：
