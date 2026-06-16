@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# 家宽VPS分流一键自查检测 Egress-Check v2.13      鸣谢：https://ip.net.coffee
+# 家宽VPS分流一键自查检测 Egress-Check v2.14      鸣谢：https://ip.net.coffee
 #
 # 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
 # 不同 ASN = 不同出口线路 = 商家做了分流. 一眼看出分了几条线, 哪些域名走哪条.
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-VERSION="2.13"
+VERSION="2.14"
 BRAND_URL="https://ip.net.coffee"
 
 # ─── 颜色 ──────────────────────────────────────────────────────────────────
@@ -597,34 +597,42 @@ first_public_hop() {
                     line=$0
                     gsub(/\r/, "", line)
                     gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, "", line)
+                    if (target_ip == "" && match(line, /\([0-9A-Fa-f:]+\)/)) target_ip=substr(line, RSTART+1, RLENGTH-2)
                     if (line !~ /[0-9]+([.][0-9]+)?%/) next
                     $0=line
                     row_avg="-"
+                    for (i=1; i<=NF; i++) {
+                        if ($i ~ /^[0-9]+([.][0-9]+)?%$/) {
+                            avg=$(i+3)
+                            if (valid_avg(avg)) row_avg=avg
+                            break
+                        }
+                    }
                     found_ip=0
                     for (i=1; i<=NF; i++) {
                         ip=$i
                         gsub(/^[^0-9a-fA-F:.]+/, "", ip)
                         gsub(/[^0-9a-fA-F:.]+$/, "", ip)
                         if (ip ~ /^([0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F:]+$/) {
-                            avg=$(i+4)
-                            if (!private_v6(ip)) {
+                            if (!private_v6(ip) && ip != target_ip) {
                                 if (first_hop == "") first_hop=ip
                                 if (ip != last_public_ip) {
                                     path_ips = (path_ips == "" ? ip : path_ips " " ip)
                                     last_public_ip = ip
                                 }
                             }
-                            if (valid_avg(avg)) row_avg=avg
                             found_ip=1
                             break
                         }
                     }
-                    if (found_ip) target_avg=row_avg
+                    target_avg=row_avg
                 }
                 END {
                     if (first_hop != "") {
                         if (target_avg == "") target_avg="-"
                         print first_hop "\t" target_avg "\t" path_ips
+                    } else if (target_avg != "") {
+                        print "__HIDDEN__\t" target_avg "\t"
                     }
                 }')
             else
@@ -635,34 +643,42 @@ first_public_hop() {
                     line=$0
                     gsub(/\r/, "", line)
                     gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/, "", line)
+                    if (target_ip == "" && match(line, /\(([0-9]{1,3}\.){3}[0-9]{1,3}\)/)) target_ip=substr(line, RSTART+1, RLENGTH-2)
                     if (line !~ /[0-9]+([.][0-9]+)?%/) next
                     $0=line
                     row_avg="-"
+                    for (i=1; i<=NF; i++) {
+                        if ($i ~ /^[0-9]+([.][0-9]+)?%$/) {
+                            avg=$(i+3)
+                            if (valid_avg(avg)) row_avg=avg
+                            break
+                        }
+                    }
                     found_ip=0
                     for (i=1; i<=NF; i++) {
                         ip=$i
                         gsub(/^[^0-9.]+/, "", ip)
                         gsub(/[^0-9.]+$/, "", ip)
                         if (ip ~ /^([0-9]{1,3}\.){3}[0-9]{1,3}$/) {
-                            avg=$(i+4)
-                            if (!private_v4(ip)) {
+                            if (!private_v4(ip) && ip != target_ip) {
                                 if (first_hop == "") first_hop=ip
                                 if (ip != last_public_ip) {
                                     path_ips = (path_ips == "" ? ip : path_ips " " ip)
                                     last_public_ip = ip
                                 }
                             }
-                            if (valid_avg(avg)) row_avg=avg
                             found_ip=1
                             break
                         }
                     }
-                    if (found_ip) target_avg=row_avg
+                    target_avg=row_avg
                 }
                 END {
                     if (first_hop != "") {
                         if (target_avg == "") target_avg="-"
                         print first_hop "\t" target_avg "\t" path_ips
+                    } else if (target_avg != "") {
+                        print "__HIDDEN__\t" target_avg "\t"
                     }
                 }')
             fi
@@ -905,7 +921,7 @@ run_check_pass() {
             fi
             ;;
     esac
-    eval "${prefix}_OK=0"; eval "${prefix}_DOWN=0"
+    eval "${prefix}_OK=0"; eval "${prefix}_DOWN=0"; eval "${prefix}_HIDDEN=0"
     local SPLIT_COLORS=( "$YELLOW" "$MAGENTA" "$RED" "$CYAN" )
     local split_color_n=4
     print_pass_header "$label"
@@ -939,6 +955,15 @@ run_check_pass() {
         hop_line="$(cat "$out_dir/$idx" 2>/dev/null || true)"
         IFS=$'\t' read -r hop latency path_ips <<< "$hop_line"
         latency="${latency:-"-"}"
+        if [[ "$hop" == "__HIDDEN__" ]]; then
+            eval "${prefix}_HIDDEN=\$((${prefix}_HIDDEN+1))"
+            [[ $OUTPUT_JSON -eq 0 ]] && print_result_row "$SYM_SKIP" "$domain" "-" "$latency" "-" "" "路径隐藏 / 仅目标可见" 0
+            [[ $first_json -eq 0 ]] && printf ',\n' >> "$tmp_file"; first_json=0
+            local latency_json="null"; [[ "$latency" =~ ^[0-9]+([.][0-9]+)?$ ]] && latency_json="$latency"
+            jq -n --arg c "$cat_v" --arg d "$domain" --argjson lat "$latency_json" --arg note "$note" \
+                '{category:$c, domain:$d, status:"hidden", first_hop:null, latency_ms:$lat, path_asn_chain:null, asn:null, isp:null, country:null, split:null, note:($note + " 路径隐藏 / 仅目标可见")}' >> "$tmp_file"
+            continue
+        fi
         if [[ -z "$hop" ]]; then
             eval "${prefix}_DOWN=\$((${prefix}_DOWN+1))"
             [[ $OUTPUT_JSON -eq 0 ]] && print_result_row "$SYM_DOWN" "$domain" "-" "-" "-" "" "探测失败 / 无公网跳" 0
@@ -1069,7 +1094,7 @@ START_EPOCH=$(date +%s)
 START_TS="$(date -Iseconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z')"
 _raw_host="$(hostname 2>/dev/null || printf 'unknown')"
 HOST_NAME="$(printf '%s' "$_raw_host" | LC_ALL=C tr -d '\000-\037\177')"; unset _raw_host
-V4_OK=0; V4_DOWN=0; V4_ROUTE_COUNT=0; V6_OK=0; V6_DOWN=0; V6_ROUTE_COUNT=0
+V4_OK=0; V4_DOWN=0; V4_HIDDEN=0; V4_ROUTE_COUNT=0; V6_OK=0; V6_DOWN=0; V6_HIDDEN=0; V6_ROUTE_COUNT=0
 V4_PASS_RAN=0; V6_PASS_RAN=0; V4_ECHO_UNIQUE=0; V6_ECHO_UNIQUE=0
 V4_ECHO_DETAIL=""; V6_ECHO_DETAIL=""; DEFAULT_EGRESS="none"
 V4_IP=""; V6_IP=""; V4_INFO="—"; V6_INFO="—"
@@ -1136,10 +1161,10 @@ END_EPOCH=$(date +%s); ELAPSED=$((END_EPOCH - START_EPOCH)); ELAPSED_STR="$(form
 if [[ $OUTPUT_JSON -eq 0 ]]; then
     printf "\n"; rule_double 72
     if [[ $V4_PASS_RAN -eq 1 ]]; then
-        printf "  IPv4:  %s%d 域名%s   %s%d 条线路%s   %s%d 域名分流%s   %s%d 探测失败%s\n" "$GREEN" "$V4_OK" "$R" "$CYAN" "$V4_ROUTE_COUNT" "$R" "$YELLOW" "$V4_SPLIT_DOMAINS" "$R" "$RED" "$V4_DOWN" "$R"
+        printf "  IPv4:  %s%d 域名%s   %s%d 条线路%s   %s%d 域名分流%s   %s%d 路径隐藏%s   %s%d 探测失败%s\n" "$GREEN" "$V4_OK" "$R" "$CYAN" "$V4_ROUTE_COUNT" "$R" "$YELLOW" "$V4_SPLIT_DOMAINS" "$R" "$GRAY" "$V4_HIDDEN" "$R" "$RED" "$V4_DOWN" "$R"
     else printf "  IPv4:  %s skipped\n" "$SYM_SKIP"; fi
     if [[ $V6_PASS_RAN -eq 1 ]]; then
-        printf "  IPv6:  %s%d 域名%s   %s%d 条线路%s   %s%d 域名分流%s   %s%d 探测失败%s\n" "$GREEN" "$V6_OK" "$R" "$CYAN" "$V6_ROUTE_COUNT" "$R" "$YELLOW" "$V6_SPLIT_DOMAINS" "$R" "$RED" "$V6_DOWN" "$R"
+        printf "  IPv6:  %s%d 域名%s   %s%d 条线路%s   %s%d 域名分流%s   %s%d 路径隐藏%s   %s%d 探测失败%s\n" "$GREEN" "$V6_OK" "$R" "$CYAN" "$V6_ROUTE_COUNT" "$R" "$YELLOW" "$V6_SPLIT_DOMAINS" "$R" "$GRAY" "$V6_HIDDEN" "$R" "$RED" "$V6_DOWN" "$R"
     else printf "  IPv6:  %s skipped  %s%s%s\n" "$SYM_SKIP" "$DIM" "${V6_SKIP_REASON:-}" "$R"; fi
     printf "  %selapsed:%s %s\n" "$DIM" "$R" "$ELAPSED_STR"; rule_double 72
 fi
@@ -1147,11 +1172,11 @@ FINAL_JSON="$(mktemp "$CACHE_DIR/.tmp-final.XXXXXXXX")"; chmod 600 "$FINAL_JSON"
 build_pass_obj() {
     local prefix="$1" ran="$2" tmp_file="$3" skip_reason="$4"
     if [[ "$ran" == "1" ]]; then
-        local ok down routes
-        eval "ok=\${${prefix}_OK}"; eval "down=\${${prefix}_DOWN}"; eval "routes=\${${prefix}_ROUTE_COUNT}"
+        local ok down hidden routes
+        eval "ok=\${${prefix}_OK}"; eval "down=\${${prefix}_DOWN}"; eval "hidden=\${${prefix}_HIDDEN}"; eval "routes=\${${prefix}_ROUTE_COUNT}"
         local split="false"; [[ $routes -ge 2 ]] && split="true"
-        jq -n --argjson ok "$ok" --argjson dn "$down" --argjson rc "$routes" --argjson split "$split" --slurpfile r "$tmp_file" \
-            '{available:true, summary:{total:($ok+$dn), ok:$ok, down:$dn}, route_count:$rc, split_routing_detected:$split, results:$r[0]}'
+        jq -n --argjson ok "$ok" --argjson dn "$down" --argjson hidden "$hidden" --argjson rc "$routes" --argjson split "$split" --slurpfile r "$tmp_file" \
+            '{available:true, summary:{total:($ok+$hidden+$dn), ok:$ok, hidden:$hidden, down:$dn}, route_count:$rc, split_routing_detected:$split, results:$r[0]}'
     else
         jq -n --arg reason "$skip_reason" '{available:false, summary:null, route_count:0, split_routing_detected:false, results:null, reason:$reason}'
     fi

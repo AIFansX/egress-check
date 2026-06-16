@@ -37,6 +37,13 @@ bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.s
 - **同时看延迟质量**：不只判断有没有分流，还能看到 VPS 到目标域名的 mtr 平均延迟。
 - **适合排查账号风控**：当社交媒体、电商、金融平台账号异常时，可以快速确认线路是否和商家承诺一致。
 
+## v2.14 修复
+
+- 修复 LXD / NAT 家宽融合场景下，`mtr` 只显示本地网关和目标站点 hostname，导致全量显示“探测失败 / 无公网跳”的问题
+- 目标 IP / 目标 hostname 不再作为“首个公网跳”参与分流判断，避免把 Google / Cloudflare / OpenAI 等目标 ASN 误当作出口线路
+- 新增 `hidden` 状态：当中间公网路径不可见时，显示“路径隐藏 / 仅目标可见”，不计入分流，也不算普通探测失败
+- JSON summary 新增 `hidden` 计数，方便区分路径隐藏和真正探测失败
+
 ## v2.13 修复
 
 - 修复 NAT / 隧道 / 代理拓扑下，HTTP 真实出口是家宽 ASN，但 `mtr` 首个公网跳是上游 VPS ASN，导致所有域名被误标为“分流”的问题
@@ -98,6 +105,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.s
 
 - 绿色：和默认出口同一条线路
 - 黄色 `⮜ 分流`：走了不同出口线路
+- 灰色 `路径隐藏 / 仅目标可见`：mtr 看不到中间公网跳，无法用于分流判断
 - 延迟列：VPS 到目标域名最后一跳的 mtr Avg，`<50ms` 绿色，`50-200ms` 黄色，`>200ms` 棕色
 - 底部汇总：告诉你一共分了几条线，每条线走哪些域名
 - 路径 ASN 摘要：辅助观察到达目标前的中途 ASN 变化，不直接等同于分流判断
