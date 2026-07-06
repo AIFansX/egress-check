@@ -37,6 +37,8 @@ bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.s
 - **同时看延迟质量**：不只判断有没有分流，还能看到 VPS 到目标域名的 mtr 平均延迟。
 - **适合排查账号风控**：当社交媒体、电商、金融平台账号异常时，可以快速确认线路是否和商家承诺一致。
 
+![Egress-Check 分流检测效果图](assets/egress-check-preview.png)
+
 ## v2.14 修复
 
 - 修复 LXD / NAT 家宽融合场景下，`mtr` 只显示本地网关和目标站点 hostname，导致全量显示“探测失败 / 无公网跳”的问题
