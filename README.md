@@ -19,7 +19,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.s
 2) 只检测 IPv4
 3) 只检测 IPv6
 4) 只检测指定分类    AI / Social / Streaming / Search / Developer / Cloud / Crypto / Gaming
-5) 低并发低压力模式  CPU 自适应并发 + 减少探测包
+5) 低并发低压力模式  根据CPU 自适应并发 + 减少探测包，更流畅
 6) JSON 输出         适合 cron / 监控
 7) 高并发日志模式    并发 10 + 关闭颜色
 ```
