@@ -131,6 +131,8 @@ bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.s
 - 底部汇总：告诉你一共分了几条线，每条线走哪些域名
 - 路径 ASN 摘要：辅助观察到达目标前的中途 ASN 变化，不直接等同于分流判断
 
+![Egress-Check 路径 ASN 摘要效果图](assets/path-asn-summary-preview.png)
+
 ```text
 Social
   ●  twitter.com               203.x.x.1        18.4ms     TW   AS4780 Digital United Inc.
