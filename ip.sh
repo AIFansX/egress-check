@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# 家宽VPS分流一键自查检测 Egress-Check v2.14      鸣谢：https://ip.net.coffee
+# 家宽VPS分流一键自查检测 Egress-Check v2.15      鸣谢：https://ip.net.coffee
 #
 # 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
 # 不同 ASN = 不同出口线路 = 商家做了分流. 一眼看出分了几条线, 哪些域名走哪条.
@@ -13,12 +13,12 @@
 # 以默认出口 ASN 为基准: 相同=未分流(绿), 不同=分流(高亮告警).
 # 退出码: 0=成功  1=配置/依赖错误  2=有域名探测失败
 #
-# 环境变量: MTR_CONCURRENCY(组内并发数,默认6)  EGRESS_RULES  EGRESS_CACHE  IP_LOOKUP_CACHE_TTL
+# 环境变量: MTR_CONCURRENCY(组内并发数,默认自适应)  EGRESS_RULES  EGRESS_CACHE  IP_LOOKUP_CACHE_TTL
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
-VERSION="2.14"
+VERSION="2.15"
 BRAND_URL="https://ip.net.coffee"
 
 # ─── 颜色 ──────────────────────────────────────────────────────────────────
@@ -54,10 +54,11 @@ PASS_MODE="auto"
 OUTPUT_JSON=0
 INTERACTIVE=0
 ONLY_CAT=""
-MTR_TIMEOUT=20
-MTR_MAXTTL=30
-MTR_COUNT=3
-MTR_ATTEMPTS=4
+MTR_TIMEOUT="${MTR_TIMEOUT:-20}"
+MTR_MAXTTL="${MTR_MAXTTL:-30}"
+MTR_COUNT="${MTR_COUNT:-3}"
+MTR_ATTEMPTS="${MTR_ATTEMPTS:-4}"
+MTR_NICE="${MTR_NICE:-10}"
 PATH_SUMMARY_LIMIT="${PATH_SUMMARY_LIMIT:-8}"
 MTR_BASE_DOMAIN="${MTR_BASE_DOMAIN:-google.com}"
 EGRESS_BASE_MODE="${EGRESS_BASE_MODE:-auto}"
@@ -563,6 +564,36 @@ ip_family() {
     else printf 'unknown'; fi
 }
 
+default_mtr_concurrency() {
+    local cores=1
+    if command -v nproc >/dev/null 2>&1; then
+        cores="$(nproc 2>/dev/null || printf '1')"
+    elif command -v getconf >/dev/null 2>&1; then
+        cores="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')"
+    fi
+    [[ "$cores" =~ ^[0-9]+$ ]] || cores=1
+    if (( cores <= 1 )); then printf '2'
+    elif (( cores == 2 )); then printf '3'
+    else printf '4'; fi
+}
+
+run_mtr_report() {
+    local ip_flag="$1" mode="$2" domain="$3"
+    if [[ "$mode" == "numeric" ]]; then
+        if command -v nice >/dev/null 2>&1; then
+            timeout "$MTR_TIMEOUT" nice -n "$MTR_NICE" mtr "$ip_flag" -r -n -c "$MTR_COUNT" -m "$MTR_MAXTTL" "$domain" 2>/dev/null || true
+        else
+            timeout "$MTR_TIMEOUT" mtr "$ip_flag" -r -n -c "$MTR_COUNT" -m "$MTR_MAXTTL" "$domain" 2>/dev/null || true
+        fi
+    else
+        if command -v nice >/dev/null 2>&1; then
+            timeout "$MTR_TIMEOUT" nice -n "$MTR_NICE" mtr "$ip_flag" -r -c "$MTR_COUNT" -m "$MTR_MAXTTL" "$domain" 2>/dev/null || true
+        else
+            timeout "$MTR_TIMEOUT" mtr "$ip_flag" -r -c "$MTR_COUNT" -m "$MTR_MAXTTL" "$domain" 2>/dev/null || true
+        fi
+    fi
+}
+
 first_public_hop() {
     local ip_flag="$1" domain="$2" output attempt parsed ip latency path_ips mode cmd_text
     is_valid_domain "$domain" || { printf ''; return; }
@@ -570,10 +601,10 @@ first_public_hop() {
         for mode in numeric names; do
             if [[ "$mode" == "numeric" ]]; then
                 cmd_text="mtr $ip_flag -r -n -c $MTR_COUNT -m $MTR_MAXTTL $domain"
-                output=$(timeout "$MTR_TIMEOUT" mtr "$ip_flag" -r -n -c "$MTR_COUNT" -m "$MTR_MAXTTL" "$domain" 2>/dev/null || true)
+                output="$(run_mtr_report "$ip_flag" "$mode" "$domain")"
             else
                 cmd_text="mtr $ip_flag -r -c $MTR_COUNT -m $MTR_MAXTTL $domain"
-                output=$(timeout "$MTR_TIMEOUT" mtr "$ip_flag" -r -c "$MTR_COUNT" -m "$MTR_MAXTTL" "$domain" 2>/dev/null || true)
+                output="$(run_mtr_report "$ip_flag" "$mode" "$domain")"
             fi
             if [[ "${EGRESS_DEBUG_MTR:-0}" == "1" ]]; then
                 local dbg_dir dbg_file safe_domain
@@ -871,8 +902,11 @@ format_elapsed() {
 run_mtr_group() {
     local ip_flag="$1" out_dir="$2" cat="$3"; shift 3
     local -a idxs=("$@")
-    local total=${#idxs[@]} maxjobs="${MTR_CONCURRENCY:-6}" running=0 idx spin_pid=""
+    local total=${#idxs[@]} maxjobs="${MTR_CONCURRENCY:-}" running=0 idx spin_pid=""
     local -a mtr_pids=()
+    [[ -n "$maxjobs" ]] || maxjobs="$(default_mtr_concurrency)"
+    [[ "$maxjobs" =~ ^[0-9]+$ ]] || maxjobs="$(default_mtr_concurrency)"
+    (( maxjobs < 1 )) && maxjobs=1
     if [[ $OUTPUT_JSON -eq 0 ]] && is_tty; then
         ( k=0
           while :; do

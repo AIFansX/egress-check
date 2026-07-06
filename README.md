@@ -51,6 +51,13 @@ bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.s
 
 ![Egress-Check 分流检测效果图](assets/egress-check-preview.png)
 
+## v2.15 优化
+
+- 默认并发从固定 6 改为按 CPU 核数自适应，降低 1 核小鸡 / NAT 容器瞬时 CPU 压力
+- `mtr` 进程默认使用较低优先级运行，减少检测时对业务进程的抢占
+- `MTR_TIMEOUT`、`MTR_MAXTTL`、`MTR_COUNT`、`MTR_ATTEMPTS`、`MTR_NICE` 现在支持环境变量覆盖
+- 如果服务器配置很低，可以用省资源模式：`MTR_CONCURRENCY=2 MTR_COUNT=2`
+
 ## v2.14 修复
 
 - 修复 LXD / NAT 家宽融合场景下，`mtr` 只显示本地网关和目标站点 hostname，导致全量显示“探测失败 / 无公网跳”的问题
@@ -164,6 +171,9 @@ MTR_CONCURRENCY=10 ./ip.sh
 IP_LOOKUP_CACHE_TTL=3600 ./ip.sh
 EGRESS_BASE_MODE=mtr ./ip.sh
 EGRESS_BASE_MODE=echo ./ip.sh
+
+# 省资源模式，适合 1 核小鸡 / NAT 容器
+MTR_CONCURRENCY=2 MTR_COUNT=2 ./ip.sh
 ```
 
 如果遇到手动 `mtr` 正常、脚本却显示“探测失败 / 无公网跳”，可以开启调试：
