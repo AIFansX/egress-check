@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# 家宽VPS分流一键自查检测 Egress-Check v2.15      鸣谢：https://ip.net.coffee
+# 家宽VPS分流一键自查检测 Egress-Check v2.16      鸣谢：https://ip.net.coffee
 #
 # 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
 # 不同 ASN = 不同出口线路 = 商家做了分流. 一眼看出分了几条线, 哪些域名走哪条.
@@ -13,12 +13,12 @@
 # 以默认出口 ASN 为基准: 相同=未分流(绿), 不同=分流(高亮告警).
 # 退出码: 0=成功  1=配置/依赖错误  2=有域名探测失败
 #
-# 环境变量: MTR_CONCURRENCY(组内并发数,默认自适应)  EGRESS_RULES  EGRESS_CACHE  IP_LOOKUP_CACHE_TTL
+# 环境变量: MTR_CONCURRENCY(组内并发数,默认6)  EGRESS_RULES  EGRESS_CACHE  IP_LOOKUP_CACHE_TTL
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
-VERSION="2.15"
+VERSION="2.16"
 BRAND_URL="https://ip.net.coffee"
 
 # ─── 颜色 ──────────────────────────────────────────────────────────────────
@@ -194,11 +194,12 @@ usage() {
 Usage: $(basename "$0") [options]
   (no flag)      自动: 网络环境 + IPv4 线路分流 + IPv6 线路分流
   -I, --interactive
-                 交互菜单: 输入 1-6 选择检测模式
+                 交互菜单: 输入 1-7 选择检测模式
   -4, --ipv4     只跑 IPv4
   -6, --ipv6     只跑 IPv6
   --json         JSON 输出
   --no-color     关闭颜色
+  --low-resource 低并发低压力模式
   --only <CAT>   只跑指定分类
   --rules <path> 自定义 rules.conf
   -h, --help     帮助
@@ -215,12 +216,13 @@ interactive_menu() {
   2) 只检测 IPv4
   3) 只检测 IPv6
   4) 只检测指定分类    AI / Social / Streaming / Search / Developer / Cloud / Crypto / Gaming
-  5) JSON 输出         适合 cron / 监控
-  6) 高并发日志模式    并发 10 + 关闭颜色
+  5) 低并发低压力模式  CPU 自适应并发 + 减少探测包
+  6) JSON 输出         适合 cron / 监控
+  7) 高并发日志模式    并发 10 + 关闭颜色
 
 EOF
     local choice cat_name
-    printf "请输入 1-6 [1]: "
+    printf "请输入 1-7 [1]: "
     IFS= read -r choice
     choice="${choice:-1}"
     case "$choice" in
@@ -233,8 +235,13 @@ EOF
             ONLY_CAT="${cat_name:-Social}"
             PASS_MODE="auto"
             ;;
-        5) OUTPUT_JSON=1 ;;
-        6)
+        5)
+            MTR_CONCURRENCY="${MTR_CONCURRENCY:-$(default_mtr_concurrency)}"
+            MTR_COUNT="${MTR_LOW_COUNT:-2}"
+            MTR_NICE="${MTR_LOW_NICE:-15}"
+            ;;
+        6) OUTPUT_JSON=1 ;;
+        7)
             MTR_CONCURRENCY="${MTR_CONCURRENCY:-10}"
             USE_COLOR=0
             set_colors
@@ -250,6 +257,11 @@ while [[ $# -gt 0 ]]; do
         -6|--ipv6)  PASS_MODE="v6-only" ;;
         --json)     OUTPUT_JSON=1 ;;
         --no-color) USE_COLOR=0; set_colors ;;
+        --low-resource)
+            MTR_CONCURRENCY="${MTR_CONCURRENCY:-$(default_mtr_concurrency)}"
+            MTR_COUNT="${MTR_LOW_COUNT:-2}"
+            MTR_NICE="${MTR_LOW_NICE:-15}"
+            ;;
         --only)     ONLY_CAT="${2:-}"; shift ;;
         --rules)    RULES_FILE="${2:-}"; shift ;;
         -h|--help)  usage; exit 0 ;;
@@ -902,9 +914,8 @@ format_elapsed() {
 run_mtr_group() {
     local ip_flag="$1" out_dir="$2" cat="$3"; shift 3
     local -a idxs=("$@")
-    local total=${#idxs[@]} maxjobs="${MTR_CONCURRENCY:-}" running=0 idx spin_pid=""
+    local total=${#idxs[@]} maxjobs="${MTR_CONCURRENCY:-6}" running=0 idx spin_pid=""
     local -a mtr_pids=()
-    [[ -n "$maxjobs" ]] || maxjobs="$(default_mtr_concurrency)"
     [[ "$maxjobs" =~ ^[0-9]+$ ]] || maxjobs="$(default_mtr_concurrency)"
     (( maxjobs < 1 )) && maxjobs=1
     if [[ $OUTPUT_JSON -eq 0 ]] && is_tty; then

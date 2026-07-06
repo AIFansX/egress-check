@@ -12,15 +12,16 @@
 bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.sh) -I
 ```
 
-运行后输入 `1-6` 选择检测模式：
+运行后输入 `1-7` 选择检测模式：
 
 ```text
 1) 默认完整检测      网络环境 + IPv4 + IPv6
 2) 只检测 IPv4
 3) 只检测 IPv6
 4) 只检测指定分类    AI / Social / Streaming / Search / Developer / Cloud / Crypto / Gaming
-5) JSON 输出         适合 cron / 监控
-6) 高并发日志模式    并发 10 + 关闭颜色
+5) 低并发低压力模式  CPU 自适应并发 + 减少探测包
+6) JSON 输出         适合 cron / 监控
+7) 高并发日志模式    并发 10 + 关闭颜色
 ```
 
 一键完整分流检测：
@@ -51,9 +52,16 @@ bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.s
 
 ![Egress-Check 分流检测效果图](assets/egress-check-preview.png)
 
+## v2.16 调整
+
+- 默认完整检测恢复固定 6 并发，优先保证检测速度
+- 交互菜单新增“低并发低压力模式”，需要降低服务器压力时手动选择
+- 低压力模式启用 CPU 核数自适应并发，并将 `MTR_COUNT` 降为 2
+- 新增 `--low-resource` 参数，方便非交互一键启用省资源模式
+
 ## v2.15 优化
 
-- 默认并发从固定 6 改为按 CPU 核数自适应，降低 1 核小鸡 / NAT 容器瞬时 CPU 压力
+- 增加按 CPU 核数自适应的低压力并发策略
 - `mtr` 进程默认使用较低优先级运行，减少检测时对业务进程的抢占
 - `MTR_TIMEOUT`、`MTR_MAXTTL`、`MTR_COUNT`、`MTR_ATTEMPTS`、`MTR_NICE` 现在支持环境变量覆盖
 - 如果服务器配置很低，可以用省资源模式：`MTR_CONCURRENCY=2 MTR_COUNT=2`
@@ -168,6 +176,7 @@ cp rules.conf.example rules.conf
 ./ip.sh --only Social   # 只跑某个分类
 ./ip.sh --json          # JSON 输出
 ./ip.sh --no-color      # 关闭颜色
+./ip.sh --low-resource  # 低并发低压力模式
 
 MTR_CONCURRENCY=10 ./ip.sh
 IP_LOOKUP_CACHE_TTL=3600 ./ip.sh
@@ -175,6 +184,7 @@ EGRESS_BASE_MODE=mtr ./ip.sh
 EGRESS_BASE_MODE=echo ./ip.sh
 
 # 省资源模式，适合 1 核小鸡 / NAT 容器
+./ip.sh --low-resource
 MTR_CONCURRENCY=2 MTR_COUNT=2 ./ip.sh
 ```
 
