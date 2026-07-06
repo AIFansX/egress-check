@@ -23,19 +23,19 @@ bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.s
 6) 高并发日志模式    并发 10 + 关闭颜色
 ```
 
-直接完整检测：
+一键完整分流检测：
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.sh)
 ```
 
-仅查AI分流情况：
+快速AI分流查询：
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.sh) --only AI
 ```
 
-仅查社交媒体分流情况：
+快速社交媒体分流查询：
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.sh) --only Social
