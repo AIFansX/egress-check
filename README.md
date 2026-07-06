@@ -29,6 +29,12 @@ bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.s
 bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.sh)
 ```
 
+仅查AI分流情况：
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.sh) --only AI
+```
+
 ## 核心卖点
 
 - **一键验收家宽线路**：复制命令到 SSH，按菜单选择即可检测。
