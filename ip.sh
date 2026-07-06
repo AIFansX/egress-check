@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# 家宽VPS分流一键自查检测 Egress-Check v2.16      鸣谢：https://ip.net.coffee
+# 家宽VPS分流一键自查检测 Egress-Check v2.17      鸣谢：https://ip.net.coffee
 #
 # 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
 # 不同 ASN = 不同出口线路 = 商家做了分流. 一眼看出分了几条线, 哪些域名走哪条.
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-VERSION="2.16"
+VERSION="2.17"
 BRAND_URL="https://ip.net.coffee"
 
 # ─── 颜色 ──────────────────────────────────────────────────────────────────
@@ -187,6 +187,19 @@ China|sina.com.cn|||Sina
 China|aliyun.com|||Alibaba Cloud
 EOF
 )
+
+default_mtr_concurrency() {
+    local cores=1
+    if command -v nproc >/dev/null 2>&1; then
+        cores="$(nproc 2>/dev/null || printf '1')"
+    elif command -v getconf >/dev/null 2>&1; then
+        cores="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')"
+    fi
+    [[ "$cores" =~ ^[0-9]+$ ]] || cores=1
+    if (( cores <= 1 )); then printf '2'
+    elif (( cores == 2 )); then printf '3'
+    else printf '4'; fi
+}
 
 usage() {
     cat <<EOF
@@ -574,19 +587,6 @@ ip_family() {
     if [[ "$ip" == *:* ]]; then printf 'ipv6'
     elif [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then printf 'ipv4'
     else printf 'unknown'; fi
-}
-
-default_mtr_concurrency() {
-    local cores=1
-    if command -v nproc >/dev/null 2>&1; then
-        cores="$(nproc 2>/dev/null || printf '1')"
-    elif command -v getconf >/dev/null 2>&1; then
-        cores="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')"
-    fi
-    [[ "$cores" =~ ^[0-9]+$ ]] || cores=1
-    if (( cores <= 1 )); then printf '2'
-    elif (( cores == 2 )); then printf '3'
-    else printf '4'; fi
 }
 
 run_mtr_report() {
