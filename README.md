@@ -52,6 +52,13 @@ bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.s
 
 ![Egress-Check 分流检测效果图](assets/egress-check-preview.png)
 
+## v2.18 优化
+
+- 新增 LINE、LINE TV 和 Zoom 分流检测
+- Steam 新增 CDN 线路检测，不再只检测商店与社区页面
+- Twitch 新增 CDN 线路检测，不再只检测官网首页
+- 默认规则由 116 个域名增加至 121 个域名
+
 ## v2.17 修复
 
 - 修复交互菜单选择 `5) 低并发低压力模式` 时，因函数定义顺序导致 `default_mtr_concurrency: command not found` 的问题

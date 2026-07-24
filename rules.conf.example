@@ -26,6 +26,8 @@ Social|discord.com|||Discord
 Social|reddit.com|||Reddit
 Social|linkedin.com|||LinkedIn
 Social|pinterest.com|||Pinterest
+Social|line.me|||LINE
+Social|zoom.us|||Zoom
 Streaming|netflix.com|||Netflix
 Streaming|youtube.com|||YouTube
 Streaming|disneyplus.com|||Disney+
@@ -34,6 +36,8 @@ Streaming|primevideo.com|||Prime Video
 Streaming|max.com|||Max
 Streaming|spotify.com|||Spotify
 Streaming|twitch.tv|||Twitch
+Streaming|static-cdn.jtvnw.net|||Twitch CDN
+Streaming|linetv.tw|||LINE TV
 Streaming|bilibili.com|||Bilibili
 Streaming|iq.com|||iQIYI International
 Streaming|crunchyroll.com|||Crunchyroll
@@ -74,6 +78,7 @@ Crypto|coingecko.com|||CoinGecko
 Crypto|etherscan.io|||Etherscan
 Gaming|steampowered.com|||Steam Store
 Gaming|steamcommunity.com|||Steam Community
+Gaming|steamcdn-a.akamaihd.net|||Steam CDN
 Gaming|epicgames.com|||Epic Games
 Gaming|battle.net|||Battle.net
 Gaming|ea.com|||EA

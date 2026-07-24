@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# 家宽VPS分流一键自查检测 Egress-Check v2.17      鸣谢：https://ip.net.coffee
+# 家宽VPS分流一键自查检测 Egress-Check v2.18      鸣谢：https://ip.net.coffee
 #
 # 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
 # 不同 ASN = 不同出口线路 = 商家做了分流. 一眼看出分了几条线, 哪些域名走哪条.
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-VERSION="2.17"
+VERSION="2.18"
 BRAND_URL="https://ip.net.coffee"
 
 # ─── 颜色 ──────────────────────────────────────────────────────────────────
@@ -93,6 +93,8 @@ Social|discord.com|||Discord
 Social|reddit.com|||Reddit
 Social|linkedin.com|||LinkedIn
 Social|pinterest.com|||Pinterest
+Social|line.me|||LINE
+Social|zoom.us|||Zoom
 Streaming|netflix.com|||Netflix
 Streaming|youtube.com|||YouTube
 Streaming|disneyplus.com|||Disney+
@@ -101,6 +103,8 @@ Streaming|primevideo.com|||Prime Video
 Streaming|max.com|||Max
 Streaming|spotify.com|||Spotify
 Streaming|twitch.tv|||Twitch
+Streaming|static-cdn.jtvnw.net|||Twitch CDN
+Streaming|linetv.tw|||LINE TV
 Streaming|bilibili.com|||Bilibili
 Streaming|iq.com|||iQIYI International
 Streaming|crunchyroll.com|||Crunchyroll
@@ -141,6 +145,7 @@ Crypto|coingecko.com|||CoinGecko
 Crypto|etherscan.io|||Etherscan
 Gaming|steampowered.com|||Steam Store
 Gaming|steamcommunity.com|||Steam Community
+Gaming|steamcdn-a.akamaihd.net|||Steam CDN
 Gaming|epicgames.com|||Epic Games
 Gaming|battle.net|||Battle.net
 Gaming|ea.com|||EA
