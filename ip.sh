@@ -678,7 +678,8 @@ parse_mtr_report() {
     BEGIN { target=norm(target); latency="-" }
     {
         gsub(/\r/,""); gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/,"")
-        if($1!~/^[0-9]+[.]/) next
+        # Only numbered hop rows; bare IP continuation lines have no statistics.
+        if($1!~/^[0-9]+[.]([|]--)?$/) next
         loss=0
         # MTR 0.95 omits the percent sign for the full-width 100.0 loss value.
         for(i=2;i<=NF;i++) if($i~/^[0-9]+([.][0-9]*)?%?$/) { loss=i; break }

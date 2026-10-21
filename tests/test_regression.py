@@ -44,6 +44,15 @@ def report(*rows):
 
 
 class ParserTests(unittest.TestCase):
+    def test_multipath_continuation_is_not_a_numbered_hop(self):
+        data=report(row('10.0.0.1'), '        10.0.0.2\n',
+                    row('1.1.1.1'), '        8.8.8.8\n',
+                    row('104.18.33.45','1.9'))
+        self.assertEqual(self.parse(data),['1.1.1.1','1.9','1.1.1.1'])
+        self.assertEqual(self.parse('        8.8.8.8\n')[0], '__PARSE_ERROR__')
+        self.assertEqual(self.parse(report('1. 1.1.1.1 0.0% 3 1.0 2.0 1.0 3.0 0.0\n',
+                    row('104.18.33.45','1.9'))),['1.1.1.1','1.9','1.1.1.1'])
+
     def test_mtr_large_values_with_trailing_decimal_point(self):
         data=report(row('192.168.43.1','4457.'),row('1.1.1.1','1028.'),
                     row('104.18.33.45','230.4'))
@@ -131,6 +140,8 @@ class ParserTests(unittest.TestCase):
                 self.assertEqual(self.parse(fixture,awk=variant),['1.1.1.1','1.5','1.1.1.1'])
                 self.assertEqual(self.parse(report(row('1.1.1.1','1028.'),
                     row('104.18.33.45','1234.')),awk=variant),['1.1.1.1','1234.0','1.1.1.1'])
+                self.assertEqual(self.parse(report(row('1.1.1.1'), '        8.8.8.8\n',
+                    row('104.18.33.45','1.9')),awk=variant),['1.1.1.1','1.9','1.1.1.1'])
 
     def test_retry_reuses_target_and_tcp_fallback(self):
         code=PROBE_CODE + '''
