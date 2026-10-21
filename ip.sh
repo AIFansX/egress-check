@@ -929,7 +929,7 @@ print_banner() {
     rule_double 72
     printf "  %s家宽VPS分流一键自查检测%s  %sEgress-Check v%s%s     %s鸣谢：%s%s\n" "$BOLD" "$R" "$CYAN" "$VERSION" "$R" "$GRAY" "$BRAND_URL" "$R"
     printf "  %s主机%s  %s%s%s\n" "$DIM" "$R" "$BOLD" "$1" "$R"
-    printf "  %s日期%s  %s    %s时间%s  %s    %s时区%s  %s\n" "$DIM" "$R" "$display_date" "$DIM" "$R" "$display_time" "$DIM" "$R" "$display_zone"
+    printf "  %s日期%s  %s    %s时间%s  %s    %s服务器时区%s  %s\n" "$DIM" "$R" "$display_date" "$DIM" "$R" "$display_time" "$DIM" "$R" "$display_zone"
     rule_double 72
 }
 print_env_section() {
