@@ -1345,12 +1345,12 @@ run_check_pass() {
                 if [[ "${route_split[$key]}" == "1" ]]; then
                     marker="${SPLIT_COLORS[${route_scidx[$key]} % split_color_n]}●${R}"; tag="⚠ 首跳差异已复测（疑似分流）"; tagcol="$YELLOW"
                 elif [[ "${route_split[$key]}" == "0" ]]; then
-                    marker="${GREEN}●${R}"; tag="✓ 可见首跳 ASN 与基准一致"; tagcol="$GREEN"
+                    marker="${GREEN}●${R}"; tag="✓ 符合预期（未分流）"; tagcol="$GREEN"
                 else
                     marker="$SYM_SKIP"; tag="首跳证据不足 / 无法判定"; tagcol="$GRAY"
                 fi
                 if [[ $COMPACT_OUTPUT -eq 1 && "${route_split[$key]}" == 0 ]]; then
-                    printf "    %s%d 域名%s  %s%s%s\n" "$BOLD" "$dcount" "$R" "$tagcol" "$tag" "$R"
+                    printf "    %b  %s%d 域名%s  %s%s%s\n" "$marker" "$BOLD" "$dcount" "$R" "$tagcol" "$tag" "$R"
                 else
                     printf "    %b  %s%-26s%s %s(%s · %s)%s  %s%d 域名%s  %s%s%s\n" \
                         "$marker" "$BOLD" "${route_isp[$key]}" "$R" "$DIM" "$asn_disp" "${route_cc[$key]}" "$R" "$BOLD" "$dcount" "$R" "$tagcol" "$tag" "$R"

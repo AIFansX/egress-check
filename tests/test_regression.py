@@ -546,7 +546,7 @@ fi''')
         self.assertFalse(obj['ipv4']['split_routing_detected'])
         text=self.run_script('-4','--no-color').stdout
         self.assertNotIn('首跳证据不足 / 无法判定',text)
-        self.assertIn('可见首跳 ASN 与基准一致',text)
+        self.assertIn('符合预期（未分流）',text)
 
     def test_same_asn_ignores_depth_protocol_and_alternate_responders(self):
         reports=[
