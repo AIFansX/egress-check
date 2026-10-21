@@ -150,9 +150,14 @@ DOMAIN_WIDTH=28
 for USE_COLOR in 0 1; do
  set_colors
  for IP_WIDTH in 15 39; do
+  first_ip=203.73.217.1; other_ip=104.28.0.0
+  if [[ $IP_WIDTH == 39 ]]; then
+   first_ip=2001:4860:1234:5678:9abc:def0:1234:5678
+   other_ip=2607:6bc0:1234:5678:9abc:def0:1234:5678
+  fi
   for latency in 0.8 15.9 198.6 999.9 1000 -; do
-   print_result_row "${GREEN}●${R}" a.example 1.1.1.1 "$latency" TW 4780 ISP 0
-   print_result_row "${YELLOW}●${R}" very-long-domain.example 2607:6bc0::10 "$latency" US 13335 ISP 1
+   print_result_row "${GREEN}●${R}" a.example "$first_ip" "$latency" TW 4780 ISP 0
+   print_result_row "${YELLOW}●${R}" very-long-domain.example "$other_ip" "$latency" US 13335 ISP 1
    print_result_row "${GRAY}⊘${R}" hidden.example - "$latency" -- '' hidden 0
   done
  done
@@ -236,6 +241,25 @@ esac''')
         self.run_script('-4','--json')
         self.run_script('-4','--json')
         self.assertEqual((self.base/'lookup.log').read_text().splitlines(),['request'])
+
+    def test_dual_stack_json(self):
+        self.stub('getent', '''case "$*" in
+ ahostsv6*) echo '2607:6bc0::10 STREAM example.com';;
+ *) echo '104.18.33.45 STREAM example.com';; esac''')
+        self.stub('curl', '''case "$*" in
+ *ipinfo.io/*/json*) echo '{"country":"TW","org":"AS4780 Test ISP"}';;
+ *-6*) echo '2001:4860::1';;
+ *) echo '203.73.217.1';; esac''')
+        self.stub('mtr', '''case "$*" in
+ *-6*) printf '%s\\n' '1.|-- 2001:4860::1 0.0% 3 1.0 2.0 1.0 3.0 0.0' '2.|-- 2607:6bc0:0:0:0:0:0:10 0.0% 3 9.0 9.0 9.0 9.0 0.0';;
+ *) printf '%s\\n' '1.|-- 203.73.217.1 0.0% 3 1.0 2.0 1.0 3.0 0.0' '2.|-- 104.18.33.45 0.0% 3 9.0 9.0 9.0 9.0 0.0';; esac''')
+        obj=json.loads(self.run_script('--json').stdout)
+        for family in ('ipv4','ipv6'):
+            self.assertTrue(obj[family]['available'])
+            self.assertFalse(obj[family]['split_routing_detected'])
+            self.assertEqual(obj[family]['summary']['ok'],2)
+            self.assertEqual(obj[family]['results'][0]['latency_ms'],9)
+        self.assertEqual(obj['ipv6']['results'][0]['first_hop'],'2001:4860::1')
 
     def test_hidden_and_failed_are_unknown(self):
         self.stub('mtr', "echo '1.|-- 104.18.33.45 0.0% 3 1.0 9.0 1.0 10.0 0.0'")

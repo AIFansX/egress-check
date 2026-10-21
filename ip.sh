@@ -891,7 +891,7 @@ format_latency_text() {
         if awk -v v="$latency" 'BEGIN { exit !(v >= 1000) }'; then
             printf '%9s' "999+ms"
         else
-            printf '%7.1fms' "$latency"
+            LC_ALL=C printf '%7.1fms' "$latency"
         fi
     else
         printf '%9s' "-"
