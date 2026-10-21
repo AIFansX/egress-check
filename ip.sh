@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# 家宽VPS分流一键自查检测 Egress-Check v2.19.4      鸣谢：https://ip.net.coffee
+# 家宽VPS分流一键自查检测 Egress-Check v2.19.5      鸣谢：https://ip.net.coffee
 #
 # 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
 # ASN 差异是可见路由差异的线索，不能单独证明目标实际看到的出口或应用分流。
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-VERSION="2.19.4"
+VERSION="2.19.5"
 export LC_NUMERIC=C
 if (( BASH_VERSINFO[0] < 4 )); then
     printf 'Bash 4.0+ is required.\n' >&2; exit 1
@@ -776,6 +776,39 @@ route_evidence_clean() {
     [[ "$ttl" =~ ^[1-9][0-9]*$ && "$gap" == 0 && "$ambiguous" == 0 && ( "$mode" == icmp || "$mode" == tcp ) && -n "$target" ]]
 }
 
+route_evidence_usable() {
+    local ttl gap ambiguous mode target
+    IFS=, read -r ttl gap ambiguous mode target <<< "$1"
+    [[ "$ttl" =~ ^[1-9][0-9]*$ && ( "$gap" == 0 || "$gap" == 1 ) && "$ambiguous" == 0 && ( "$mode" == icmp || "$mode" == tcp ) && -n "$target" ]]
+}
+
+route_visible_node_matches() {
+    local base_ttl ttl _
+    [[ -n "${3:-}" && "$3" != __* && "$3" == "${4:-}" ]] || return 1
+    route_evidence_usable "$1" && route_evidence_usable "$2" || return 1
+    IFS=, read -r base_ttl _ <<< "$1"
+    IFS=, read -r ttl _ <<< "$2"
+    # Exact node identity is an observation, not proof of an unhidden prefix or application egress.
+    [[ "$base_ttl" == "$ttl" ]]
+}
+
+route_evidence_reason() {
+    local base_ttl base_gap base_ambiguous base_mode ttl gap ambiguous mode _
+    IFS=, read -r base_ttl base_gap base_ambiguous base_mode _ <<< "$1"
+    IFS=, read -r ttl gap ambiguous mode _ <<< "$2"
+    if [[ "$ambiguous" == 1 || "$base_ambiguous" == 1 ]]; then
+        printf '首段存在多个回应节点 / 无法判定'
+    elif [[ "$base_mode" != "$mode" ]]; then
+        printf '探测协议不一致（%s/%s）/ 无法判定' "$base_mode" "$mode"
+    elif [[ "$base_ttl" != "$ttl" ]]; then
+        printf '可见节点跳数不同（%s/%s）/ 无法判定' "$base_ttl" "$ttl"
+    elif [[ "$gap" == 1 || "$base_gap" == 1 ]]; then
+        printf '前段未完整回应且可见节点不同 / 无法判定'
+    else
+        printf '首跳证据无效 / 无法判定'
+    fi
+}
+
 route_evidence_comparable() {
     local base_ttl base_mode ttl mode _
     route_evidence_clean "$1" && route_evidence_clean "$2" || return 1
@@ -786,6 +819,7 @@ route_evidence_comparable() {
 
 route_repeat_needed() {
     local base_evidence="$1" evidence="$2" base_asn="$3" asn="$4" base_mode mode target _
+    if [[ -n "$asn" && "$asn" == "$base_asn" ]] && route_visible_node_matches "$base_evidence" "$evidence" "${5:-}" "${6:-}"; then return 1; fi
     [[ -n "$asn" && -n "$base_asn" ]] && route_evidence_clean "$base_evidence" || return 1
     IFS=, read -r _ _ _ base_mode _ <<< "$base_evidence"
     IFS=, read -r _ _ _ mode target <<< "$evidence"
@@ -800,11 +834,13 @@ detect_mtr_base_asn() {
     hop_line="$(first_public_hop "$ip_flag" "$MTR_BASE_DOMAIN" || true)"
     IFS=$'\t' read -r hop latency path_ips evidence <<< "$hop_line"
     [[ -n "$hop" && "$hop" != __* ]] || return 1
-    route_evidence_clean "$evidence" || return 1
+    route_evidence_usable "$evidence" || return 1
     IFS=, read -r _ _ _ mode target <<< "$evidence"
     repeat_line="$(first_public_hop "$ip_flag" "$MTR_BASE_DOMAIN" "$target" "$mode" || true)"
     IFS=$'\t' read -r repeat_hop _ _ repeat_evidence <<< "$repeat_line"
-    [[ "$repeat_hop" == "$hop" ]] && route_evidence_comparable "$evidence" "$repeat_evidence" || return 1
+    route_visible_node_matches "$evidence" "$repeat_evidence" "$hop" "$repeat_hop" || return 1
+    # The repeat is pinned to the original target and protocol; prefer its complete prefix if available.
+    if route_evidence_clean "$repeat_evidence"; then evidence="$repeat_evidence"; fi
     data="$(lookup_ip "$hop" || true)"
     split_lookup_data "$data" asn isp country
     normalize_lookup_fields asn isp country
@@ -988,6 +1024,7 @@ print_result_row() {
     if [[ "${COMPACT_OUTPUT:-0}" == 1 ]]; then
         local status=""
         [[ "$is_split" == -1 ]] && status="${9:-无法判定}"
+        [[ "${10:-}" == visible_node ]] && status="可见节点一致（仅节点）"
         if [[ "$is_split" == 1 ]]; then
             latency_disp="$(printf '%s%s%s' "$YELLOW" "$(format_latency_text "$latency")" "$R")"
             printf "      %b  %s%-*s  %b  %s%-3s  ⮜ 疑似分流%s\n" "$marker" "$YELLOW" "$domain_width" "$domain" "$latency_disp" "$YELLOW" "$cc" "$R"
@@ -1154,7 +1191,8 @@ run_check_pass() {
             initial_data="$(printf '%s\t%s\t%s' "$initial_asn" "$initial_isp" "$initial_country")"
             if [[ "$(lookup_score "$initial_data")" -ge 3 ]]; then hop_lookup[$initial_hop]="$initial_data"; fi
             printf '%s' "$initial_data" > "$out_dir/$idx.lookup"
-            if route_repeat_needed "$base_evidence" "$initial_evidence" "$effective_base_asn" "$initial_asn"; then repeat_idxs+=("$idx"); fi
+            local base_hop_var="${prefix}_MTR_BASE_HOP"
+            if route_repeat_needed "$base_evidence" "$initial_evidence" "$effective_base_asn" "$initial_asn" "${!base_hop_var}" "$initial_hop"; then repeat_idxs+=("$idx"); fi
         done
         if (( ${#repeat_idxs[@]} > 0 )); then run_mtr_group "$ip_flag" "$out_dir" "$cat" --repeat "${repeat_idxs[@]}"; fi
         for idx in "${gidxs[@]}"; do
@@ -1190,7 +1228,7 @@ run_check_pass() {
         data="$(cat "$out_dir/$idx.lookup" 2>/dev/null || true)"
         split_lookup_data "$data" asn isp country
         normalize_lookup_fields asn isp country
-        local confirmed=0 comparison_reason="" comparison="inconclusive"
+        local confirmed=0 comparison_reason="" comparison="inconclusive" comparison_scope="none"
         local ttl repeat_line repeat_hop repeat_latency repeat_path repeat_evidence repeat_data repeat_asn repeat_isp repeat_country _
         if [[ -f "$out_dir/$idx.repeat" ]]; then
             repeat_line="$(cat "$out_dir/$idx.repeat")"
@@ -1216,12 +1254,15 @@ run_check_pass() {
             comparison_reason="ASN 未知 / 无法判定"
         elif [[ -z "$base_evidence" ]]; then
             comparison_reason="基准首跳不稳定或不可见 / 无法判定"
+        elif [[ "$asn" == "$effective_base_asn" ]] && route_visible_node_matches "$base_evidence" "$evidence" "${!base_hop_var}" "$hop" && ! route_evidence_comparable "$base_evidence" "$evidence"; then
+            is_split=0; comparison="baseline_match"; comparison_scope="visible_node"
+            comparison_reason="同跳可见节点与基准一致（不证明完整路径或应用出口）"
         elif ! route_evidence_comparable "$base_evidence" "$evidence"; then
-            comparison_reason="首跳缺失、跳数或协议不一致 / 无法判定"
+            comparison_reason="$(route_evidence_reason "$base_evidence" "$evidence")"
         elif [[ "$asn" == "$effective_base_asn" ]]; then
-            is_split=0; comparison="baseline_match"; comparison_reason="可见首跳 ASN 与基准一致"
+            is_split=0; comparison="baseline_match"; comparison_scope="complete_prefix"; comparison_reason="可见首跳 ASN 与基准一致"
         elif [[ "$confirmed" == 1 ]]; then
-            is_split=1; comparison="repeatable_difference"; comparison_reason="复测首跳 ASN 差异，疑似分流；不证明应用出口改变"
+            is_split=1; comparison="repeatable_difference"; comparison_scope="complete_prefix"; comparison_reason="复测首跳 ASN 差异，疑似分流；不证明应用出口改变"
         elif [[ -z "$comparison_reason" ]]; then
             comparison_reason="首跳差异未经确认 / 无法判定"
         fi
@@ -1252,8 +1293,9 @@ run_check_pass() {
         if [[ $is_split -eq 1 ]]; then marker="${YELLOW}●${R}"
         elif [[ $is_split -eq 0 ]]; then marker="${GREEN}●${R}"
         else marker="$SYM_SKIP"; display_isp+=" ($comparison_reason)"; fi
+        [[ "$comparison_scope" == visible_node ]] && display_isp+=" (可见节点一致，仅节点观察)"
         [[ "$latency" == "-" ]] && display_isp+=" (目标未回应)"
-        [[ $OUTPUT_JSON -eq 0 ]] && print_result_row "$marker" "$domain" "$hop" "$latency" "$country" "$asn" "$display_isp" "$is_split" "$comparison_reason"
+        [[ $OUTPUT_JSON -eq 0 ]] && print_result_row "$marker" "$domain" "$hop" "$latency" "$country" "$asn" "$display_isp" "$is_split" "$comparison_reason" "$comparison_scope"
         [[ $first_json -eq 0 ]] && printf ',\n' >> "$tmp_file"; first_json=0
         local split_json="null"
         [[ $is_split -eq 0 ]] && split_json="false"
@@ -1263,11 +1305,11 @@ run_check_pass() {
         IFS=, read -r ttl _ _ _ _ <<< "$evidence"
         [[ "$ttl" =~ ^[1-9][0-9]*$ ]] && ttl_json="$ttl"
         if [[ -z "$asn" ]]; then
-            jq -n --arg c "$cat_v" --arg d "$domain" --arg h "$hop" --argjson lat "$latency_json" --arg chain "$path_chain" --arg isp "$isp" --arg cc "$country" --argjson sp "$split_json" --arg note "$note" --argjson ttl "$ttl_json" --arg comparison "$comparison" --arg reason "$comparison_reason" \
-                '{category:$c, domain:$d, status:"ok", first_hop:$h, first_hop_ttl:$ttl, comparison:$comparison, reason:$reason, latency_ms:$lat, path_asn_chain:($chain | if . == "" then null else . end), asn:null, isp:$isp, country:$cc, split:$sp, note:$note}' >> "$tmp_file"
+            jq -n --arg scope "$comparison_scope" --arg c "$cat_v" --arg d "$domain" --arg h "$hop" --argjson lat "$latency_json" --arg chain "$path_chain" --arg isp "$isp" --arg cc "$country" --argjson sp "$split_json" --arg note "$note" --argjson ttl "$ttl_json" --arg comparison "$comparison" --arg reason "$comparison_reason" \
+                '{category:$c, domain:$d, status:"ok", first_hop:$h, first_hop_ttl:$ttl, comparison:$comparison, comparison_scope:$scope, reason:$reason, latency_ms:$lat, path_asn_chain:($chain | if . == "" then null else . end), asn:null, isp:$isp, country:$cc, split:$sp, note:$note}' >> "$tmp_file"
         else
-            jq -n --arg c "$cat_v" --arg d "$domain" --arg h "$hop" --argjson lat "$latency_json" --arg chain "$path_chain" --arg asn "$asn" --arg isp "$isp" --arg cc "$country" --argjson sp "$split_json" --arg note "$note" --argjson ttl "$ttl_json" --arg comparison "$comparison" --arg reason "$comparison_reason" \
-                '{category:$c, domain:$d, status:"ok", first_hop:$h, first_hop_ttl:$ttl, comparison:$comparison, reason:$reason, latency_ms:$lat, path_asn_chain:($chain | if . == "" then null else . end), asn:("AS"+$asn), isp:$isp, country:$cc, split:$sp, note:$note}' >> "$tmp_file"
+            jq -n --arg scope "$comparison_scope" --arg c "$cat_v" --arg d "$domain" --arg h "$hop" --argjson lat "$latency_json" --arg chain "$path_chain" --arg asn "$asn" --arg isp "$isp" --arg cc "$country" --argjson sp "$split_json" --arg note "$note" --argjson ttl "$ttl_json" --arg comparison "$comparison" --arg reason "$comparison_reason" \
+                '{category:$c, domain:$d, status:"ok", first_hop:$h, first_hop_ttl:$ttl, comparison:$comparison, comparison_scope:$scope, reason:$reason, latency_ms:$lat, path_asn_chain:($chain | if . == "" then null else . end), asn:("AS"+$asn), isp:$isp, country:$cc, split:$sp, note:$note}' >> "$tmp_file"
         fi
         done
     done

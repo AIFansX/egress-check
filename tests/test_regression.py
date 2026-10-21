@@ -67,13 +67,32 @@ class ParserTests(unittest.TestCase):
             self.assertEqual(result.returncode==0,valid,candidate)
 
     def test_repeat_filter_keeps_useful_checks_and_skips_protocol_mismatch(self):
-        code=''.join(function(n) for n in ('route_evidence_clean','route_evidence_comparable','route_repeat_needed'))
+        code=''.join(function(n) for n in ('route_evidence_clean','route_evidence_usable','route_visible_node_matches','route_evidence_comparable','route_repeat_needed'))
         for evidence,asn,needed in [('2,0,0,icmp,1.1.1.1','4780',False),
             ('2,0,0,icmp,1.1.1.1','13335',True),('3,1,0,icmp,1.1.1.1','4780',True),
             ('2,0,1,icmp,1.1.1.1','13335',True),('2,0,0,tcp,1.1.1.1','13335',False),
             ('2,0,0,icmp,1.1.1.1','',False)]:
             result=shell(code+f"route_repeat_needed '2,0,0,icmp,8.8.8.8' '{evidence}' 4780 '{asn}'")
             self.assertEqual(result.returncode==0,needed,(evidence,asn))
+
+    def test_visible_match_requires_exact_node_depth_and_unambiguous_evidence(self):
+        code=''.join(function(n) for n in ('route_evidence_usable','route_visible_node_matches'))
+        for evidence,hop,expected in [
+            ('2,1,0,icmp,1.1.1.1','139.175.240.84',True),
+            ('2,0,0,tcp,1.1.1.1','139.175.240.84',True),
+            ('3,1,0,icmp,1.1.1.1','139.175.240.84',False),
+            ('2,1,1,icmp,1.1.1.1','139.175.240.84',False),
+            ('2,1,0,icmp,1.1.1.1','192.72.221.37',False),
+            ('2,1,0,udp,1.1.1.1','139.175.240.84',False),
+        ]:
+            result=shell(code+f"route_visible_node_matches '2,1,0,icmp,8.8.8.8' '{evidence}' '139.175.240.84' '{hop}'")
+            self.assertEqual(result.returncode==0,expected,(evidence,hop))
+
+    def test_partial_private_gateway_loss_does_not_create_gap(self):
+        data=report(row('192.168.11.1',loss='71.4',number=1),
+                    row('139.175.240.84',number=2),row('104.18.33.45',number=3))
+        result=shell(PROBE_CODE+'parse_mtr_report 104.18.33.45 1',data)
+        self.assertEqual(result.stdout.rstrip().split('\t')[3],'2,0,0')
 
     def test_multipath_continuation_is_not_a_numbered_hop(self):
         data=report(row('10.0.0.1'), '        10.0.0.2\n',
@@ -501,7 +520,7 @@ printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- 1.1.1.1 0.0% 3 1 1 1 1 0
 
     def test_same_asn_with_different_confidence_is_grouped_separately(self):
         self.configure_route_evidence('''if [[ "${@: -1}" == 104.18.33.46 ]]; then
-printf '%s\\n' '1.|-- ??? 100.0 3 0 0 0 0 0' '2.|-- 203.73.217.1 0.0% 3 1 1 1 1 0' '3.|-- 104.18.33.46 0.0% 3 8 8 8 8 0'
+printf '%s\\n' '1.|-- ??? 100.0 3 0 0 0 0 0' '2.|-- 203.73.217.2 0.0% 3 1 1 1 1 0' '3.|-- 104.18.33.46 0.0% 3 8 8 8 8 0'
 else
 printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- 203.73.217.1 0.0% 3 1 1 1 1 0' '3.|-- 104.18.33.45 0.0% 3 8 8 8 8 0'
 fi''')
@@ -521,12 +540,46 @@ fi''')
         obj=json.loads(self.run_script('-4','--json').stdout)
         self.assertIsNone(obj['ipv4']['results'][0]['split'])
 
-    def test_unreliable_reference_does_not_become_new_baseline(self):
+    def test_gapped_reference_cannot_support_different_node_split(self):
         self.configure_route_evidence("printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- 203.73.217.1 0.0% 3 1 1 1 1 0' '3.|-- 104.18.33.45 0.0% 3 8 8 8 8 0'",
             "printf '%s\\n' '1.|-- ??? 100.0 3 0 0 0 0 0' '2.|-- 1.1.1.1 0.0% 3 1 1 1 1 0' '3.|-- 8.8.8.8 0.0% 3 1 1 1 1 0'")
         obj=json.loads(self.run_script('-4','--json').stdout)
         self.assertIsNone(obj['ipv4']['results'][0]['split'])
-        self.assertIn('基准',obj['ipv4']['results'][0]['reason'])
+        self.assertIn('前段未完整回应',obj['ipv4']['results'][0]['reason'])
+
+    def test_stable_gapped_reference_and_same_node_match(self):
+        self.configure_route_evidence("printf '%s\\n' '1.|-- ??? 100.0 3 0 0 0 0 0' '2.|-- 203.73.217.1 0.0% 3 1 1 1 1 0' '3.|-- 104.18.33.45 0.0% 3 8 8 8 8 0'",
+            "printf '%s\\n' '1.|-- ??? 100.0 3 0 0 0 0 0' '2.|-- 203.73.217.1 0.0% 3 1 1 1 1 0' '3.|-- 8.8.8.8 0.0% 3 1 1 1 1 0'")
+        obj=json.loads(self.run_script('-4','--json').stdout)
+        result=obj['ipv4']['results'][0]
+        self.assertFalse(result['split'])
+        self.assertEqual(result['comparison_scope'],'visible_node')
+        self.assertEqual(result['latency_ms'],8)
+        self.assertIn('不证明完整路径或应用出口',result['reason'])
+        text=self.run_script('-4','--compact','--no-color').stdout
+        self.assertIn('可见节点一致（仅节点）',text)
+
+    def test_tcp_same_exact_node_is_observation_not_full_prefix(self):
+        self.configure_route_evidence('''echo "$*" >> "$PROBE_COUNTER"
+if [[ " $* " != *" -T "* ]]; then
+printf '%s\\n' '1.|-- ??? 100.0 3 0 0 0 0 0' '2.|-- 203.73.217.1 0.0% 3 1 1 1 1 0'
+else
+printf '%s\\n' '1.|-- 10.0.0.1 71.4% 3 1 1 1 1 0' '2.|-- 203.73.217.1 0.0% 3 1 1 1 1 0' '3.|-- 104.18.33.45 0.0% 3 197.5 197.5 197.5 197.5 0'
+fi''')
+        result=json.loads(self.run_script('-4','--json').stdout)['ipv4']['results'][0]
+        self.assertFalse(result['split'])
+        self.assertEqual(result['comparison_scope'],'visible_node')
+        self.assertEqual(result['latency_ms'],197.5)
+        self.assertEqual(len((self.base/'probe.count').read_text().splitlines()),2)
+
+    def test_unstable_reference_still_unknown(self):
+        self.configure_route_evidence("printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- 203.73.217.1 0.0% 3 1 1 1 1 0' '3.|-- 104.18.33.45 0.0% 3 8 8 8 8 0'",
+            '''hop=203.73.217.1
+if [[ -e "$PROBE_COUNTER" ]]; then hop=203.73.217.2; else touch "$PROBE_COUNTER"; fi
+printf '%s\\n' '1.|-- ??? 100.0 3 0 0 0 0 0' "2.|-- $hop 0.0% 3 1 1 1 1 0" '3.|-- 8.8.8.8 0.0% 3 1 1 1 1 0' ''')
+        result=json.loads(self.run_script('-4','--json').stdout)['ipv4']['results'][0]
+        self.assertIsNone(result['split'])
+        self.assertIn('基准',result['reason'])
 
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(prefix='egress-tests-')
