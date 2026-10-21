@@ -1033,16 +1033,17 @@ print_result_row() {
     if [[ -z "$asn" ]]; then asn_isp="$isp"; else asn_isp="AS${asn} ${isp}"; fi
     local domain_width="${DOMAIN_WIDTH:-24}" ip_width="${IP_WIDTH:-15}"
     if [[ "${COMPACT_OUTPUT:-0}" == 1 ]]; then
-        local status=""
+        local status="" asn_label="-"
+        [[ -n "$asn" ]] && asn_label="AS$asn"
         [[ "$is_split" == -1 ]] && status="${9:-无法判定}"
         if [[ "$is_split" == 1 ]]; then
             latency_disp="$(printf '%s%s%s' "$YELLOW" "$(format_latency_text "$latency")" "$R")"
-            printf "      %b  %s%-*s  %b  %s%-3s  ⮜ 分流%s\n" "$marker" "$YELLOW" "$domain_width" "$domain" "$latency_disp" "$YELLOW" "$cc" "$R"
+            printf "      %b  %s%-*s  %b  %s%-3s  %-12s  ⮜ 分流%s\n" "$marker" "$YELLOW" "$domain_width" "$domain" "$latency_disp" "$YELLOW" "$cc" "$asn_label" "$R"
         else
             [[ -z "$asn" && "$is_split" != -1 ]] && status="$isp"
             [[ "$latency" == - && "$ip" != - ]] && status+=" (目标未回应)"
             latency_disp="$(format_latency "$latency")"
-            printf "      %b  %-*s  %b  %-3s" "$marker" "$domain_width" "$domain" "$latency_disp" "$cc"
+            printf "      %b  %-*s  %b  %-3s  %s%-12s%s" "$marker" "$domain_width" "$domain" "$latency_disp" "$cc" "$DIM" "$asn_label" "$R"
             [[ -n "$status" ]] && printf "  %s%s%s" "$DIM" "$status" "$R"
             printf '\n'
         fi

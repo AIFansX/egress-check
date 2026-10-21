@@ -249,7 +249,7 @@ set_colors
                     self.assertIn('0) 简洁模式',result.stderr)
                     self.assertIn('1) 【默认】完整检测',result.stderr)
 
-    def test_compact_rows_hide_ip_asn_and_keep_status_colors_and_alignment(self):
+    def test_compact_rows_show_asn_hide_ip_isp_and_keep_colors_and_alignment(self):
         code='set -euo pipefail\n'+''.join(function(n) for n in
              ('set_colors','latency_color','format_latency_text','format_latency','print_result_row'))
         code+='''
@@ -262,7 +262,7 @@ for USE_COLOR in 0 1; do
   for latency in 0.8 15.9 198.6 999.9 1000 -; do
    print_result_row "${GREEN}●${R}" a.example "$ip" "$latency" TW 4780 'Sample ISP' 0 '可见首跳 ASN 与基准一致'
    print_result_row "${YELLOW}●${R}" long-domain.example "$ip" "$latency" US 13335 'Other ISP' 1 '复测首跳 ASN 差异'
-   print_result_row "${GRAY}⊘${R}" unknown.example "$ip" "$latency" TW 4780 'Sample ISP' -1 '首跳证据不足 / 无法判定'
+   print_result_row "${GRAY}⊘${R}" unknown.example "$ip" "$latency" TW 4294967295 'Sample ISP' -1 '首跳证据不足 / 无法判定'
   done
  done
  print_result_row "${GRAY}⊘${R}" hidden.example - 9.0 -- '' '路径隐藏 / 仅目标可见' 0
@@ -273,7 +273,9 @@ done
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertNotIn('203.73.217.1',result.stdout)
         self.assertNotIn('2001:4860:',result.stdout)
-        self.assertNotIn('AS4780',result.stdout)
+        self.assertIn('AS4780',result.stdout)
+        self.assertIn('AS13335',result.stdout)
+        self.assertIn('AS4294967295',result.stdout)
         self.assertNotIn('ISP',result.stdout)
         self.assertNotIn('可见首跳 ASN 与基准一致',result.stdout)
         plain=re.sub(r'\x1b\[[0-9;]*m','',result.stdout)
@@ -284,6 +286,7 @@ done
         lines=plain.splitlines()
         self.assertEqual(len(lines),76)
         self.assertEqual(len({re.search(r' (TW|US|--)($| )',s).start() for s in lines}),1)
+        self.assertEqual(len({re.search(r' (?:TW|US|--) +((?:AS[0-9]+)|-)(?: +|$)',s).start(1) for s in lines}),1)
         split_lines=[s for s in result.stdout.splitlines() if 'long-domain.example' in s]
         self.assertEqual(len(split_lines),24)
         self.assertTrue(all('⮜ 分流' in s for s in split_lines))
