@@ -232,7 +232,7 @@ interactive_menu() {
 家宽VPS分流一键自查检测 Egress-Check v${VERSION}
 请选择检测模式:
 
-  0) 简洁模式          在完整检测之后，尽可能简洁的展示结果
+  0) 简洁模式          基于完整检测，展示更加简洁的排版效果
   1) 【默认】完整检测  网络环境 + IPv4 + IPv6，完整结果
   2) 只检测 IPv4
   3) 只检测 IPv6
@@ -1470,6 +1470,7 @@ if [[ $OUTPUT_JSON -eq 0 ]]; then
         printf "  IPv6:  %s%d 域名%s   %s%d 种可见 ASN%s   %s%d 域名分流%s   %s%d 路径隐藏%s   %s%d 探测失败%s\n" "$GREEN" "$V6_OK" "$R" "$CYAN" "$V6_ROUTE_COUNT" "$R" "$YELLOW" "$V6_SPLIT_DOMAINS" "$R" "$GRAY" "$V6_HIDDEN" "$R" "$RED" "$V6_DOWN" "$R"
         printf "         %s%d 无法判定（包含隐藏、失败及首跳证据不足）%s\n" "$GRAY" "$V6_UNKNOWN" "$R"
     else printf "  IPv6:  %s skipped  %s%s%s\n" "$SYM_SKIP" "$DIM" "${V6_SKIP_REASON:-}" "$R"; fi
+    printf "  检测脚本：%shttps://github.com/AIFansX/egress-check%s\n" "$CYAN" "$R"
     printf "  %selapsed:%s %s\n" "$DIM" "$R" "$ELAPSED_STR"; rule_double 72
 fi
 FINAL_JSON="$(mktemp "$RUN_DIR/final.XXXXXXXX")"; chmod 600 "$FINAL_JSON"

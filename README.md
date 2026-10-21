@@ -15,7 +15,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.s
 运行后输入 `0-7` 选择检测模式，直接回车默认选择 `1`：
 
 ```text
-0) 简洁模式          在完整检测之后，尽可能简洁的展示结果
+0) 简洁模式          基于完整检测，展示更加简洁的排版效果
 1) 【默认】完整检测  网络环境 + IPv4 + IPv6，完整结果
 2) 只检测 IPv4
 3) 只检测 IPv6
