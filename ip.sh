@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# 家宽VPS分流一键自查检测 Egress-Check v2.19.5      鸣谢：https://ip.net.coffee
+# 家宽VPS分流一键自查检测 Egress-Check v2.19.6      鸣谢：https://ip.net.coffee
 #
 # 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
 # ASN 差异是可见路由差异的线索，不能单独证明目标实际看到的出口或应用分流。
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-VERSION="2.19.5"
+VERSION="2.19.6"
 export LC_NUMERIC=C
 if (( BASH_VERSINFO[0] < 4 )); then
     printf 'Bash 4.0+ is required.\n' >&2; exit 1
@@ -819,7 +819,7 @@ route_evidence_comparable() {
 
 route_repeat_needed() {
     local base_evidence="$1" evidence="$2" base_asn="$3" asn="$4" base_mode mode target _
-    if [[ -n "$asn" && "$asn" == "$base_asn" ]] && route_visible_node_matches "$base_evidence" "$evidence" "${5:-}" "${6:-}"; then return 1; fi
+    [[ -n "$asn" && "$asn" == "$base_asn" ]] && return 1
     [[ -n "$asn" && -n "$base_asn" ]] && route_evidence_clean "$base_evidence" || return 1
     IFS=, read -r _ _ _ base_mode _ <<< "$base_evidence"
     IFS=, read -r _ _ _ mode target <<< "$evidence"
@@ -1024,7 +1024,6 @@ print_result_row() {
     if [[ "${COMPACT_OUTPUT:-0}" == 1 ]]; then
         local status=""
         [[ "$is_split" == -1 ]] && status="${9:-无法判定}"
-        [[ "${10:-}" == visible_node ]] && status="可见节点一致（仅节点）"
         if [[ "$is_split" == 1 ]]; then
             latency_disp="$(printf '%s%s%s' "$YELLOW" "$(format_latency_text "$latency")" "$R")"
             printf "      %b  %s%-*s  %b  %s%-3s  ⮜ 疑似分流%s\n" "$marker" "$YELLOW" "$domain_width" "$domain" "$latency_disp" "$YELLOW" "$cc" "$R"
@@ -1191,8 +1190,7 @@ run_check_pass() {
             initial_data="$(printf '%s\t%s\t%s' "$initial_asn" "$initial_isp" "$initial_country")"
             if [[ "$(lookup_score "$initial_data")" -ge 3 ]]; then hop_lookup[$initial_hop]="$initial_data"; fi
             printf '%s' "$initial_data" > "$out_dir/$idx.lookup"
-            local base_hop_var="${prefix}_MTR_BASE_HOP"
-            if route_repeat_needed "$base_evidence" "$initial_evidence" "$effective_base_asn" "$initial_asn" "${!base_hop_var}" "$initial_hop"; then repeat_idxs+=("$idx"); fi
+            if route_repeat_needed "$base_evidence" "$initial_evidence" "$effective_base_asn" "$initial_asn"; then repeat_idxs+=("$idx"); fi
         done
         if (( ${#repeat_idxs[@]} > 0 )); then run_mtr_group "$ip_flag" "$out_dir" "$cat" --repeat "${repeat_idxs[@]}"; fi
         for idx in "${gidxs[@]}"; do
@@ -1252,15 +1250,13 @@ run_check_pass() {
         local is_split=-1
         if [[ -z "$effective_base_asn" || -z "$asn" ]]; then
             comparison_reason="ASN 未知 / 无法判定"
+        elif [[ "$asn" == "$effective_base_asn" ]]; then
+            is_split=0; comparison="baseline_match"; comparison_scope="asn"
+            comparison_reason="可见首跳 ASN 与基准一致"
         elif [[ -z "$base_evidence" ]]; then
             comparison_reason="基准首跳不稳定或不可见 / 无法判定"
-        elif [[ "$asn" == "$effective_base_asn" ]] && route_visible_node_matches "$base_evidence" "$evidence" "${!base_hop_var}" "$hop" && ! route_evidence_comparable "$base_evidence" "$evidence"; then
-            is_split=0; comparison="baseline_match"; comparison_scope="visible_node"
-            comparison_reason="同跳可见节点与基准一致（不证明完整路径或应用出口）"
         elif ! route_evidence_comparable "$base_evidence" "$evidence"; then
             comparison_reason="$(route_evidence_reason "$base_evidence" "$evidence")"
-        elif [[ "$asn" == "$effective_base_asn" ]]; then
-            is_split=0; comparison="baseline_match"; comparison_scope="complete_prefix"; comparison_reason="可见首跳 ASN 与基准一致"
         elif [[ "$confirmed" == 1 ]]; then
             is_split=1; comparison="repeatable_difference"; comparison_scope="complete_prefix"; comparison_reason="复测首跳 ASN 差异，疑似分流；不证明应用出口改变"
         elif [[ -z "$comparison_reason" ]]; then
@@ -1293,7 +1289,6 @@ run_check_pass() {
         if [[ $is_split -eq 1 ]]; then marker="${YELLOW}●${R}"
         elif [[ $is_split -eq 0 ]]; then marker="${GREEN}●${R}"
         else marker="$SYM_SKIP"; display_isp+=" ($comparison_reason)"; fi
-        [[ "$comparison_scope" == visible_node ]] && display_isp+=" (可见节点一致，仅节点观察)"
         [[ "$latency" == "-" ]] && display_isp+=" (目标未回应)"
         [[ $OUTPUT_JSON -eq 0 ]] && print_result_row "$marker" "$domain" "$hop" "$latency" "$country" "$asn" "$display_isp" "$is_split" "$comparison_reason" "$comparison_scope"
         [[ $first_json -eq 0 ]] && printf ',\n' >> "$tmp_file"; first_json=0

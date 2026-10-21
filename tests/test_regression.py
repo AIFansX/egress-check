@@ -69,7 +69,7 @@ class ParserTests(unittest.TestCase):
     def test_repeat_filter_keeps_useful_checks_and_skips_protocol_mismatch(self):
         code=''.join(function(n) for n in ('route_evidence_clean','route_evidence_usable','route_visible_node_matches','route_evidence_comparable','route_repeat_needed'))
         for evidence,asn,needed in [('2,0,0,icmp,1.1.1.1','4780',False),
-            ('2,0,0,icmp,1.1.1.1','13335',True),('3,1,0,icmp,1.1.1.1','4780',True),
+            ('2,0,0,icmp,1.1.1.1','13335',True),('3,1,0,icmp,1.1.1.1','4780',False),
             ('2,0,1,icmp,1.1.1.1','13335',True),('2,0,0,tcp,1.1.1.1','13335',False),
             ('2,0,0,icmp,1.1.1.1','',False)]:
             result=shell(code+f"route_repeat_needed '2,0,0,icmp,8.8.8.8' '{evidence}' 4780 '{asn}'")
@@ -518,7 +518,7 @@ printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- 1.1.1.1 0.0% 3 1 1 1 1 0
         # Only the initial ICMP/TCP pair; no futile extra TCP report.
         self.assertEqual(len((self.base/'probe.count').read_text().splitlines()),2)
 
-    def test_same_asn_with_different_confidence_is_grouped_separately(self):
+    def test_same_asn_different_ip_and_missing_prefix_are_normal(self):
         self.configure_route_evidence('''if [[ "${@: -1}" == 104.18.33.46 ]]; then
 printf '%s\\n' '1.|-- ??? 100.0 3 0 0 0 0 0' '2.|-- 203.73.217.2 0.0% 3 1 1 1 1 0' '3.|-- 104.18.33.46 0.0% 3 8 8 8 8 0'
 else
@@ -529,11 +529,31 @@ fi''')
         obj=json.loads(self.run_script('-4','--json').stdout)
         self.assertEqual(obj['ipv4']['route_count'],1)
         self.assertFalse(obj['ipv4']['results'][0]['split'])
-        self.assertIsNone(obj['ipv4']['results'][1]['split'])
-        self.assertIsNone(obj['ipv4']['split_routing_detected'])
+        self.assertFalse(obj['ipv4']['results'][1]['split'])
+        self.assertEqual(obj['ipv4']['results'][1]['comparison_scope'],'asn')
+        self.assertFalse(obj['ipv4']['split_routing_detected'])
         text=self.run_script('-4','--no-color').stdout
-        self.assertIn('首跳证据不足 / 无法判定',text)
+        self.assertNotIn('首跳证据不足 / 无法判定',text)
         self.assertIn('可见首跳 ASN 与基准一致',text)
+
+    def test_same_asn_ignores_depth_protocol_and_alternate_responders(self):
+        reports=[
+            "printf '%s\\n' '1.|-- ??? 100.0 3 0 0 0 0 0' '3.|-- 203.73.217.2 0.0% 3 1 1 1 1 0' '4.|-- 104.18.33.45 0.0% 3 8 8 8 8 0'",
+            "printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- 203.73.217.2 0.0% 3 1 1 1 1 0' '        203.73.217.3' '3.|-- 104.18.33.45 0.0% 3 8 8 8 8 0'",
+            '''if [[ " $* " != *" -T "* ]]; then echo bad-report; exit; fi
+printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- 203.73.217.2 0.0% 3 1 1 1 1 0' '3.|-- 104.18.33.45 0.0% 3 8 8 8 8 0' ''',
+        ]
+        for probe in reports:
+            with self.subTest(probe=probe):
+                self.configure_route_evidence('echo "$*" >> "$PROBE_COUNTER"\n'+probe)
+                counter=self.base/'probe.count'
+                counter.unlink(missing_ok=True)
+                obj=json.loads(self.run_script('-4','--json').stdout)
+                result=obj['ipv4']['results'][0]
+                self.assertFalse(result['split'])
+                self.assertEqual(result['comparison_scope'],'asn')
+                self.assertEqual(obj['ipv4']['summary']['unknown'],0)
+                self.assertLessEqual(len(counter.read_text().splitlines()),2)
 
     def test_alternate_responders_not_counted_as_split(self):
         self.configure_route_evidence("printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- 1.1.1.1 0.0% 3 1 1 1 1 0' '        203.73.217.1' '3.|-- 104.18.33.45 0.0% 3 8 8 8 8 0'")
@@ -553,11 +573,11 @@ fi''')
         obj=json.loads(self.run_script('-4','--json').stdout)
         result=obj['ipv4']['results'][0]
         self.assertFalse(result['split'])
-        self.assertEqual(result['comparison_scope'],'visible_node')
+        self.assertEqual(result['comparison_scope'],'asn')
         self.assertEqual(result['latency_ms'],8)
-        self.assertIn('不证明完整路径或应用出口',result['reason'])
+        self.assertIn('ASN 与基准一致',result['reason'])
         text=self.run_script('-4','--compact','--no-color').stdout
-        self.assertIn('可见节点一致（仅节点）',text)
+        self.assertNotIn('仅节点',text)
 
     def test_tcp_same_exact_node_is_observation_not_full_prefix(self):
         self.configure_route_evidence('''echo "$*" >> "$PROBE_COUNTER"
@@ -568,18 +588,18 @@ printf '%s\\n' '1.|-- 10.0.0.1 71.4% 3 1 1 1 1 0' '2.|-- 203.73.217.1 0.0% 3 1 1
 fi''')
         result=json.loads(self.run_script('-4','--json').stdout)['ipv4']['results'][0]
         self.assertFalse(result['split'])
-        self.assertEqual(result['comparison_scope'],'visible_node')
+        self.assertEqual(result['comparison_scope'],'asn')
         self.assertEqual(result['latency_ms'],197.5)
         self.assertEqual(len((self.base/'probe.count').read_text().splitlines()),2)
 
-    def test_unstable_reference_still_unknown(self):
+    def test_same_asn_matches_http_reference_when_mtr_reference_unstable(self):
         self.configure_route_evidence("printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- 203.73.217.1 0.0% 3 1 1 1 1 0' '3.|-- 104.18.33.45 0.0% 3 8 8 8 8 0'",
             '''hop=203.73.217.1
 if [[ -e "$PROBE_COUNTER" ]]; then hop=203.73.217.2; else touch "$PROBE_COUNTER"; fi
 printf '%s\\n' '1.|-- ??? 100.0 3 0 0 0 0 0' "2.|-- $hop 0.0% 3 1 1 1 1 0" '3.|-- 8.8.8.8 0.0% 3 1 1 1 1 0' ''')
         result=json.loads(self.run_script('-4','--json').stdout)['ipv4']['results'][0]
-        self.assertIsNone(result['split'])
-        self.assertIn('基准',result['reason'])
+        self.assertFalse(result['split'])
+        self.assertEqual(result['comparison_scope'],'asn')
 
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(prefix='egress-tests-')
