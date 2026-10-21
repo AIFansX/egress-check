@@ -60,6 +60,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.s
 - JSON 结论与明细一致：`true` 表示发现相对基准的 ASN 差异，`false` 表示所有项目均可比较且未发现差异，`null` 表示证据不足；新增 `summary.unknown`，它可能与 `hidden`、`down` 重叠，不能累加到总数。
 - 兼容旧 Bash 的并发控制，每次运行使用独立临时目录；中断会清理本次探测进程，不删除其他检测任务的数据。
 - 同一轮检测统一域名列宽，IPv6 预留完整地址宽度，延迟固定 9 字符；异常状态和彩色、无色输出保持对齐。
+- 菜单选择 JSON 模式不再混入提示文字；200ms 按说明保持黄色，超过 200ms 才显示棕色。
 - 保留 121 条规则、默认 6 并发和 1–7 菜单。
 
 ## v2.18 优化
@@ -234,7 +235,7 @@ ls -la ~/.cache/egress-check/mtr-debug/
 <details>
 <summary>安全说明</summary>
 
-纯 bash 明文，无混淆、无持久化、无提权后门。联网仅用于：
+纯 bash 明文，无混淆，不安装后台服务。联网仅用于：
 
 - `mtr` 探测公开域名
 - `curl` 查询 ASN 和出口 IP

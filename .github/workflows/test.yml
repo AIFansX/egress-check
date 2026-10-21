@@ -8,9 +8,11 @@ permissions:
 jobs:
   linux:
     runs-on: ubuntu-latest
+    env:
+      TEST_REAL_MTR: '1'
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update -qq && sudo apt-get install -y jq gawk mawk busybox shellcheck
+      - run: sudo apt-get update -qq && sudo apt-get install -y jq gawk mawk busybox shellcheck mtr-tiny
       - run: bash -n ip.sh && shellcheck --severity=warning ip.sh
       - run: python3 tests/test_regression.py
       - name: Legacy awk (no interval expressions)

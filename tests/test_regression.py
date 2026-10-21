@@ -170,6 +170,20 @@ done
         self.assertIn('\x1b[33m', lines[37])
 
 
+@unittest.skipUnless(os.environ.get('TEST_REAL_MTR') == '1', 'Real MTR smoke test is enabled in Linux CI')
+class RealMtrTests(unittest.TestCase):
+    parse = ParserTests.parse
+
+    def test_installed_mtr_loopback_report(self):
+        command = ([] if os.geteuid() == 0 else ['sudo','-n']) + [
+            'mtr','-4','-r','-n','-c','2','-m','3','127.0.0.1']
+        result = subprocess.run(command, text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode,0,result.stderr)
+        parsed = self.parse(result.stdout,'127.0.0.1')
+        self.assertEqual(parsed[0],'__HIDDEN__',result.stdout)
+        self.assertRegex(parsed[1],r'^[0-9]+([.][0-9]+)?$')
+
+
 @unittest.skipUnless(os.name=='posix' and shutil.which('jq'), 'Linux integration requires jq')
 class IntegrationTests(unittest.TestCase):
     def setUp(self):
@@ -213,6 +227,15 @@ esac''')
         self.assertEqual(obj['ipv4']['summary']['total'],2)
         self.assertEqual(obj['ipv4']['results'][0]['latency_ms'],9)
         self.assertEqual(json.loads((self.cache/'last.json').read_text()),obj)
+
+    def test_same_ip_lookup_is_cached(self):
+        self.env['LOOKUP_LOG']=str(self.base/'lookup.log')
+        self.stub('curl', '''case "$*" in
+ *ipinfo.io/*/json*) echo request >> "$LOOKUP_LOG"; echo '{"country":"TW","org":"AS4780 Test ISP"}';;
+ *) echo 203.73.217.1;; esac''')
+        self.run_script('-4','--json')
+        self.run_script('-4','--json')
+        self.assertEqual((self.base/'lookup.log').read_text().splitlines(),['request'])
 
     def test_hidden_and_failed_are_unknown(self):
         self.stub('mtr', "echo '1.|-- 104.18.33.45 0.0% 3 1.0 9.0 1.0 10.0 0.0'")
@@ -310,7 +333,11 @@ run_mtr_group -4 "$RUN_DIR" AI 0
             self.assertFalse(run_dir.exists())
             self.assertTrue(survivor.exists())
             pid=int(marker.read_text())
-            with self.assertRaises(ProcessLookupError): os.kill(pid,0)
+            # Minimal containers may not reap orphaned zombies immediately.
+            # A zombie has exited and cannot keep probing or consume CPU.
+            state=Path(f'/proc/{pid}/stat')
+            if state.exists():
+                self.assertEqual(state.read_text().rsplit(')',1)[1].split()[0],'Z')
         finally:
             if p.poll() is None: p.kill(); p.communicate()
 
