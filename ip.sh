@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# 家宽VPS分流一键自查检测 Egress-Check v2.19.1      鸣谢：https://ip.net.coffee
+# 家宽VPS分流一键自查检测 Egress-Check v2.19.2      鸣谢：https://ip.net.coffee
 #
 # 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
 # ASN 差异是可见路由差异的线索，不能单独证明目标实际看到的出口或应用分流。
@@ -10,7 +10,7 @@
 #   2. IPv4 线路分流检测 (按分类逐组并发 mtr → 第一公网跳 → ASN 分组)
 #   3. IPv6 线路分流检测 (不可用则跳过)
 #
-# 以默认出口 ASN 为基准: 相同=未分流(绿), 不同=分流(高亮告警).
+# 比较稳定且同跳数的可见首跳；复测差异为线索，不等同于应用出口分流。
 # 退出码: 0=成功  1=配置/依赖错误  2=有域名探测失败
 #
 # 环境变量: MTR_CONCURRENCY(组内并发数,默认6)  EGRESS_RULES  EGRESS_CACHE  IP_LOOKUP_CACHE_TTL
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-VERSION="2.19.1"
+VERSION="2.19.2"
 export LC_NUMERIC=C
 if (( BASH_VERSINFO[0] < 4 )); then
     printf 'Bash 4.0+ is required.\n' >&2; exit 1
@@ -674,16 +674,23 @@ resolve_target() {
 
 parse_mtr_report() {
     local target="$1"
-    LC_ALL=C awk -v target="$target" "$IP_AWK"'
+    LC_ALL=C awk -v target="$target" -v evidence="${2:-0}" "$IP_AWK"'
     BEGIN { target=norm(target); latency="-" }
     {
         gsub(/\r/,""); gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/,"")
-        # Only numbered hop rows; bare IP continuation lines have no statistics.
-        if($1!~/^[0-9]+[.]([|]--)?$/) next
+        # Alternate responders at/before the first public hop make it ambiguous.
+        if($1!~/^[0-9]+[.]([|]--)?$/) {
+            alternate=norm($1)
+            if(alternate!="" && current_ttl>0 && (first=="" || current_ttl==first_ttl) && alternate!=row_ip) ambiguous=1
+            next
+        }
+        current_ttl=$1+0; row_ip=""
+        if(first=="" && current_ttl!=previous_ttl+1) early_gap=1
+        previous_ttl=current_ttl
         loss=0
         # MTR 0.95 omits the percent sign for the full-width 100.0 loss value.
         for(i=2;i<=NF;i++) if($i~/^[0-9]+([.][0-9]*)?%?$/) { loss=i; break }
-        if(!loss) { if($0 !~ /waiting for reply/) malformed=1; next }
+        if(!loss) { if($0 !~ /waiting for reply/) malformed=1; if(first=="") early_gap=1; next }
         rows++
         ip=""; display=""
         for(i=2;i<loss;i++) {
@@ -693,17 +700,18 @@ parse_mtr_report() {
         }
         # Large report values may be printed as "1028." to fit MTR columns.
         if($(loss+1)!~/^[0-9]+$/ || $(loss+3)!~/^[0-9]+([.][0-9]*)?$/) { malformed=1; next }
-        if($loss+0>=100 || $(loss+1)+0==0) next
+        row_ip=ip
+        if($loss+0>=100 || $(loss+1)+0==0) { if(first=="") early_gap=1; next }
         if(ip=="") { malformed=1; next }
         if(ip==target) { reached=1; latency=$(loss+3); sub(/[.]$/,".0",latency); next }
         if(!private_ip(ip)) {
-            if(first=="") first=display
+            if(first=="") { first=display; first_ttl=current_ttl }
             if(ip!=previous) { path=path (path=="" ? "" : " ") display; previous=ip }
         }
     }
     END {
         if(malformed || !rows || target=="") print "__PARSE_ERROR__\t-\t"
-        else if(first!="") print first "\t" latency "\t" path
+        else if(first!="") print first "\t" latency "\t" path (evidence ? "\t" first_ttl "," (early_gap+0) "," (ambiguous+0) : "")
         else if(reached) print "__HIDDEN__\t" latency "\t"
         else print "__NO_REPLY__\t-\t"
     }'
@@ -719,14 +727,17 @@ run_mtr_report() {
 }
 
 first_public_hop() {
-    local ip_flag="$1" domain="$2" output attempt parsed hop latency path_ips mode target remaining limit
+    local ip_flag="$1" domain="$2" output attempt parsed hop latency path_ips evidence mode target remaining limit
+    local -a modes=(icmp tcp)
+    [[ -z "${4:-}" ]] || modes=("$4")
     local deadline=$((SECONDS + MTR_BUDGET)) best="" last_error="__PROBE_ERROR__"
     is_valid_domain "$domain" || { printf '__DNS_ERROR__\t-\t'; return; }
     limit=5; (( MTR_BUDGET < limit )) && limit=$MTR_BUDGET
-    target="$(resolve_target "$ip_flag" "$domain" "$limit" || true)"
+    target="${3:-}"
+    [[ -n "$target" ]] || target="$(resolve_target "$ip_flag" "$domain" "$limit" || true)"
     [[ -n "$target" ]] || { printf '__DNS_ERROR__\t-\t'; return; }
     for ((attempt=1; attempt<=MTR_ATTEMPTS; attempt++)); do
-        for mode in icmp tcp; do
+        for mode in "${modes[@]}"; do
             remaining=$((deadline-SECONDS)); (( remaining > 0 )) || break 2
             limit=$MTR_TIMEOUT; (( remaining < limit )) && limit=$remaining
             output="$(run_mtr_report "$ip_flag" "$mode" "$target" "$limit" 2>/dev/null || true)"
@@ -738,12 +749,13 @@ first_public_hop() {
             fi
             # A final timeout must not erase a more informative earlier error.
             [[ -n "$output" ]] || continue
-            parsed="$(printf '%s\n' "$output" | parse_mtr_report "$target")"
-            IFS=$'\t' read -r hop latency path_ips <<< "$parsed"
+            parsed="$(printf '%s\n' "$output" | parse_mtr_report "$target" 1)"
+            IFS=$'\t' read -r hop latency path_ips evidence <<< "$parsed"
             case "$hop" in
                 __HIDDEN__) printf '%s' "$parsed"; return ;;
                 __*) last_error="$hop" ;;
                 *)
+                    parsed+=",$mode,$target"
                     # Preserve a visible route even when the destination filters probes.
                     best="$parsed"
                     [[ "$latency" != "-" ]] && { printf '%s' "$parsed"; return; }
@@ -759,11 +771,31 @@ first_public_hop() {
     else printf '%s\t-\t' "$last_error"; fi
 }
 
+route_evidence_clean() {
+    local ttl gap ambiguous mode target
+    IFS=, read -r ttl gap ambiguous mode target <<< "$1"
+    [[ "$ttl" =~ ^[1-9][0-9]*$ && "$gap" == 0 && "$ambiguous" == 0 && ( "$mode" == icmp || "$mode" == tcp ) && -n "$target" ]]
+}
+
+route_evidence_comparable() {
+    local base_ttl base_mode ttl mode _
+    route_evidence_clean "$1" && route_evidence_clean "$2" || return 1
+    IFS=, read -r base_ttl _ _ base_mode _ <<< "$1"
+    IFS=, read -r ttl _ _ mode _ <<< "$2"
+    [[ "$base_ttl" == "$ttl" && "$base_mode" == "$mode" ]]
+}
+
 detect_mtr_base_asn() {
-    local ip_flag="$1" prefix="$2" hop_line hop latency path_ips data asn isp country info
+    local ip_flag="$1" prefix="$2" hop_line hop latency path_ips evidence data asn isp country info
+    local repeat_line repeat_hop repeat_evidence mode target _
     hop_line="$(first_public_hop "$ip_flag" "$MTR_BASE_DOMAIN" || true)"
-    IFS=$'\t' read -r hop latency path_ips <<< "$hop_line"
+    IFS=$'\t' read -r hop latency path_ips evidence <<< "$hop_line"
     [[ -n "$hop" && "$hop" != __* ]] || return 1
+    route_evidence_clean "$evidence" || return 1
+    IFS=, read -r _ _ _ mode target <<< "$evidence"
+    repeat_line="$(first_public_hop "$ip_flag" "$MTR_BASE_DOMAIN" "$target" "$mode" || true)"
+    IFS=$'\t' read -r repeat_hop _ _ repeat_evidence <<< "$repeat_line"
+    [[ "$repeat_hop" == "$hop" ]] && route_evidence_comparable "$evidence" "$repeat_evidence" || return 1
     data="$(lookup_ip "$hop" || true)"
     split_lookup_data "$data" asn isp country
     normalize_lookup_fields asn isp country
@@ -774,6 +806,7 @@ detect_mtr_base_asn() {
     printf -v "${prefix}_MTR_BASE_ASN" '%s' "$asn"
     printf -v "${prefix}_MTR_BASE_HOP" '%s' "$hop"
     printf -v "${prefix}_MTR_BASE_INFO" '%s' "$info"
+    printf -v "${prefix}_MTR_BASE_EVIDENCE" '%s' "$evidence"
 }
 
 declare -a CATS=() DOMAINS=() NOTES=()
@@ -946,7 +979,7 @@ print_result_row() {
     # All markers occupy one display cell, including color-disabled output.
     if [[ "$is_split" == "1" ]]; then
         latency_disp="$(printf '%s%s%s' "$YELLOW" "$(format_latency_text "$latency")" "$R")"
-        printf "      %b  %s%-*s  %-*s  %b  %s%-3s  %s  ⮜ 分流%s\n" "$marker" "$YELLOW" "$domain_width" "$domain" "$ip_width" "$ip" "$latency_disp" "$YELLOW" "$cc" "$asn_isp" "$R"
+        printf "      %b  %s%-*s  %-*s  %b  %s%-3s  %s  ⮜ 疑似分流%s\n" "$marker" "$YELLOW" "$domain_width" "$domain" "$ip_width" "$ip" "$latency_disp" "$YELLOW" "$cc" "$asn_isp" "$R"
     else
         latency_disp="$(format_latency "$latency")"
         printf "      %b  %-*s  %-*s  %b  %-3s  %s%s%s\n" "$marker" "$domain_width" "$domain" "$ip_width" "$ip" "$latency_disp" "$cc" "$DIM" "$asn_isp" "$R"
@@ -1000,10 +1033,10 @@ run_mtr_group() {
 }
 
 run_check_pass() {
-    local label="$1" ip_flag="$2" tmp_file="$3" prefix base_asn mtr_base_asn effective_base_asn base_desc topology_note
+    local label="$1" ip_flag="$2" tmp_file="$3" prefix base_asn mtr_base_asn effective_base_asn base_desc topology_note base_evidence
     case "$label" in
-        IPv4) prefix=V4; base_asn="${V4_BASE_ASN:-}"; mtr_base_asn="${V4_MTR_BASE_ASN:-}" ;;
-        IPv6) prefix=V6; base_asn="${V6_BASE_ASN:-}"; mtr_base_asn="${V6_MTR_BASE_ASN:-}" ;;
+        IPv4) prefix=V4; base_asn="${V4_BASE_ASN:-}"; mtr_base_asn="${V4_MTR_BASE_ASN:-}"; base_evidence="${V4_MTR_BASE_EVIDENCE:-}" ;;
+        IPv6) prefix=V6; base_asn="${V6_BASE_ASN:-}"; mtr_base_asn="${V6_MTR_BASE_ASN:-}"; base_evidence="${V6_MTR_BASE_EVIDENCE:-}" ;;
     esac
     effective_base_asn="$base_asn"
     base_desc="默认出口 ${base_asn:+AS$base_asn}"
@@ -1019,7 +1052,7 @@ run_check_pass() {
             if [[ -n "$base_asn" && -n "$mtr_base_asn" && "$base_asn" != "$mtr_base_asn" ]]; then
                 effective_base_asn="$mtr_base_asn"
                 base_desc="MTR主路径 AS$mtr_base_asn"
-                topology_note="检测到 NAT/隧道拓扑: HTTP出口 AS$base_asn, MTR主路径 AS$mtr_base_asn; 本轮按 MTR主路径判断分流"
+                topology_note="HTTP出口 AS$base_asn 与稳定 MTR首跳 AS$mtr_base_asn 不同；本轮按 MTR主路径比较，不直接证明 NAT 或分流"
             fi
             ;;
     esac
@@ -1043,7 +1076,7 @@ run_check_pass() {
     done
     printf '[\n' > "$tmp_file"
     local first_json=1
-    local -A route_isp=() route_cc=() route_domains=() route_split=() route_scidx=() hop_lookup=()
+    local -A route_isp=() route_cc=() route_domains=() route_split=() route_scidx=() hop_lookup=() route_asn=() route_seen=()
     local -A path_domains=() path_counts=()
     local -a path_order=()
     local split_idx=0 split_domain_count=0
@@ -1056,9 +1089,9 @@ run_check_pass() {
         local idx
         for idx in "${gidxs[@]}"; do
         local cat_v="$cat" domain="${DOMAINS[$idx]}" note="${NOTES[$idx]}"
-        local hop_line hop latency path_ips
+        local hop_line hop latency path_ips evidence
         hop_line="$(cat "$out_dir/$idx" 2>/dev/null || true)"
-        IFS=$'\t' read -r hop latency path_ips <<< "$hop_line"
+        IFS=$'\t' read -r hop latency path_ips evidence <<< "$hop_line"
         latency="${latency:-"-"}"
         if [[ "$hop" == "__HIDDEN__" ]]; then
             eval "${prefix}_HIDDEN=\$((${prefix}_HIDDEN+1))"
@@ -1091,17 +1124,49 @@ run_check_pass() {
         fi
         split_lookup_data "$data" asn isp country
         normalize_lookup_fields asn isp country
+        local confirmed=0 comparison_reason="" comparison="inconclusive"
+        local ttl mode target repeat_line repeat_hop repeat_latency repeat_path repeat_evidence repeat_data repeat_asn repeat_isp repeat_country _
+        IFS=, read -r ttl _ _ mode target <<< "$evidence"
+        # Retry only suspect routes, pinning both destination IP and protocol.
+        if [[ -n "$base_evidence" && -n "$asn" && -n "$effective_base_asn" && -n "$target" ]] &&
+           { [[ "$asn" != "$effective_base_asn" ]] || ! route_evidence_comparable "$base_evidence" "$evidence"; }; then
+            repeat_line="$(MTR_ATTEMPTS=1 first_public_hop "$ip_flag" "$domain" "$target" "$mode" || true)"
+            IFS=$'\t' read -r repeat_hop repeat_latency repeat_path repeat_evidence <<< "$repeat_line"
+            if [[ -n "$repeat_hop" && "$repeat_hop" != __* ]] && route_evidence_comparable "$base_evidence" "$repeat_evidence"; then
+                repeat_data="$(lookup_ip "$repeat_hop" || true)"
+                split_lookup_data "$repeat_data" repeat_asn repeat_isp repeat_country
+                normalize_lookup_fields repeat_asn repeat_isp repeat_country
+                if [[ "$repeat_asn" == "$effective_base_asn" ]]; then
+                    hop="$repeat_hop"; latency="$repeat_latency"; path_ips="$repeat_path"; evidence="$repeat_evidence"
+                    asn="$repeat_asn"; isp="$repeat_isp"; country="$repeat_country"
+                elif [[ "$repeat_hop" == "$hop" && "$repeat_asn" == "$asn" ]] && route_evidence_comparable "$base_evidence" "$evidence"; then
+                    confirmed=1
+                else comparison_reason="首跳复测不稳定 / 无法判定"; fi
+            else comparison_reason="首跳复测证据不足 / 无法判定"; fi
+        fi
         [[ -z "$country" ]] && country="??"; [[ -z "$isp" ]] && isp="Unknown"
         data="$(printf '%s\t%s\t%s' "$asn" "$isp" "$country")"
         [[ -z "${hop_lookup[$hop]+set}" && "$(lookup_score "$data")" -ge 3 ]] && hop_lookup[$hop]="$data"
         eval "${prefix}_OK=\$((${prefix}_OK+1))"
         local is_split=-1
-        if [[ -n "$effective_base_asn" && -n "$asn" ]]; then
-            is_split=0
-            [[ "$asn" != "$effective_base_asn" ]] && is_split=1
+        if [[ -z "$effective_base_asn" || -z "$asn" ]]; then
+            comparison_reason="ASN 未知 / 无法判定"
+        elif [[ -z "$base_evidence" ]]; then
+            comparison_reason="基准首跳不稳定或不可见 / 无法判定"
+        elif ! route_evidence_comparable "$base_evidence" "$evidence"; then
+            comparison_reason="首跳缺失、跳数或协议不一致 / 无法判定"
+        elif [[ "$asn" == "$effective_base_asn" ]]; then
+            is_split=0; comparison="baseline_match"; comparison_reason="可见首跳 ASN 与基准一致"
+        elif [[ "$confirmed" == 1 ]]; then
+            is_split=1; comparison="repeatable_difference"; comparison_reason="复测首跳 ASN 差异，疑似分流；不证明应用出口改变"
+        elif [[ -z "$comparison_reason" ]]; then
+            comparison_reason="首跳差异未经确认 / 无法判定"
         fi
-        local key="$asn"; [[ -z "$key" ]] && key="ip:$hop"
+        local route_id="$asn"; [[ -z "$route_id" ]] && route_id="ip:$hop"
+        route_seen[$route_id]=1
+        local key="$route_id:$is_split"
         if [[ -z "${route_split[$key]+x}" ]]; then
+            route_asn[$key]="$route_id"
             route_isp[$key]="$isp"; route_cc[$key]="$country"
             route_domains[$key]="$domain"; route_split[$key]="$is_split"
             if [[ $is_split -eq 1 ]]; then route_scidx[$key]=$split_idx; split_idx=$((split_idx+1)); else route_scidx[$key]=-1; fi
@@ -1123,7 +1188,7 @@ run_check_pass() {
         local display_isp="$isp"
         if [[ $is_split -eq 1 ]]; then marker="${YELLOW}●${R}"
         elif [[ $is_split -eq 0 ]]; then marker="${GREEN}●${R}"
-        else marker="$SYM_SKIP"; display_isp+=" (ASN 未知 / 无法判定)"; fi
+        else marker="$SYM_SKIP"; display_isp+=" ($comparison_reason)"; fi
         [[ "$latency" == "-" ]] && display_isp+=" (目标未回应)"
         [[ $OUTPUT_JSON -eq 0 ]] && print_result_row "$marker" "$domain" "$hop" "$latency" "$country" "$asn" "$display_isp" "$is_split"
         [[ $first_json -eq 0 ]] && printf ',\n' >> "$tmp_file"; first_json=0
@@ -1131,20 +1196,26 @@ run_check_pass() {
         [[ $is_split -eq 0 ]] && split_json="false"
         [[ $is_split -eq 1 ]] && split_json="true"
         local latency_json="null"; [[ "$latency" =~ ^[0-9]+([.][0-9]+)?$ ]] && latency_json="$latency"
+        local ttl_json="null"
+        IFS=, read -r ttl _ _ mode target <<< "$evidence"
+        [[ "$ttl" =~ ^[1-9][0-9]*$ ]] && ttl_json="$ttl"
         if [[ -z "$asn" ]]; then
-            jq -n --arg c "$cat_v" --arg d "$domain" --arg h "$hop" --argjson lat "$latency_json" --arg chain "$path_chain" --arg isp "$isp" --arg cc "$country" --argjson sp "$split_json" --arg note "$note" \
-                '{category:$c, domain:$d, status:"ok", first_hop:$h, latency_ms:$lat, path_asn_chain:($chain | if . == "" then null else . end), asn:null, isp:$isp, country:$cc, split:$sp, note:$note}' >> "$tmp_file"
+            jq -n --arg c "$cat_v" --arg d "$domain" --arg h "$hop" --argjson lat "$latency_json" --arg chain "$path_chain" --arg isp "$isp" --arg cc "$country" --argjson sp "$split_json" --arg note "$note" --argjson ttl "$ttl_json" --arg comparison "$comparison" --arg reason "$comparison_reason" \
+                '{category:$c, domain:$d, status:"ok", first_hop:$h, first_hop_ttl:$ttl, comparison:$comparison, reason:$reason, latency_ms:$lat, path_asn_chain:($chain | if . == "" then null else . end), asn:null, isp:$isp, country:$cc, split:$sp, note:$note}' >> "$tmp_file"
         else
-            jq -n --arg c "$cat_v" --arg d "$domain" --arg h "$hop" --argjson lat "$latency_json" --arg chain "$path_chain" --arg asn "$asn" --arg isp "$isp" --arg cc "$country" --argjson sp "$split_json" --arg note "$note" \
-                '{category:$c, domain:$d, status:"ok", first_hop:$h, latency_ms:$lat, path_asn_chain:($chain | if . == "" then null else . end), asn:("AS"+$asn), isp:$isp, country:$cc, split:$sp, note:$note}' >> "$tmp_file"
+            jq -n --arg c "$cat_v" --arg d "$domain" --arg h "$hop" --argjson lat "$latency_json" --arg chain "$path_chain" --arg asn "$asn" --arg isp "$isp" --arg cc "$country" --argjson sp "$split_json" --arg note "$note" --argjson ttl "$ttl_json" --arg comparison "$comparison" --arg reason "$comparison_reason" \
+                '{category:$c, domain:$d, status:"ok", first_hop:$h, first_hop_ttl:$ttl, comparison:$comparison, reason:$reason, latency_ms:$lat, path_asn_chain:($chain | if . == "" then null else . end), asn:("AS"+$asn), isp:$isp, country:$cc, split:$sp, note:$note}' >> "$tmp_file"
         fi
         done
     done
     printf '\n]\n' >> "$tmp_file"
     rm -rf "$out_dir" 2>/dev/null || true
-    local route_count=${#route_split[@]}
+    local route_count=${#route_seen[@]}
     eval "${prefix}_ROUTE_COUNT=$route_count"
     eval "${prefix}_SPLIT_DOMAINS=$split_domain_count"
+    local unknown_count
+    unknown_count=$(jq '[.[] | select(.split == null)] | length' "$tmp_file")
+    printf -v "${prefix}_UNKNOWN" '%s' "$unknown_count"
     if [[ $OUTPUT_JSON -eq 0 && $route_count -gt 0 ]]; then
         printf "\n  %s\n" "$(rule_single 72)"
         printf "  %s%s 线路分流汇总%s  %s(基准 = %s)%s\n" "$BOLD" "$label" "$R" "$DIM" "$base_desc" "$R"
@@ -1157,15 +1228,15 @@ run_check_pass() {
                 else [[ "${route_split[$key]}" == "-1" ]] || continue; fi
                 local dlist="${route_domains[$key]}"
                 local dcount; dcount=$(printf '%s\n' $dlist | wc -l | tr -d ' ')
-                local asn_disp="$key"
-                [[ "$key" == ip:* ]] && asn_disp="${key#ip:}" || asn_disp="AS$key"
+                local asn_disp="${route_asn[$key]}"
+                [[ "$asn_disp" == ip:* ]] && asn_disp="${asn_disp#ip:}" || asn_disp="AS$asn_disp"
                 local marker tag tagcol
                 if [[ "${route_split[$key]}" == "1" ]]; then
-                    marker="${SPLIT_COLORS[${route_scidx[$key]} % split_color_n]}●${R}"; tag="⚠ 存在分流"; tagcol="$YELLOW"
+                    marker="${SPLIT_COLORS[${route_scidx[$key]} % split_color_n]}●${R}"; tag="⚠ 首跳差异已复测（疑似分流）"; tagcol="$YELLOW"
                 elif [[ "${route_split[$key]}" == "0" ]]; then
                     marker="${GREEN}●${R}"; tag="✓ 可见首跳 ASN 与基准一致"; tagcol="$GREEN"
                 else
-                    marker="$SYM_SKIP"; tag="ASN 未知 / 无法判定"; tagcol="$GRAY"
+                    marker="$SYM_SKIP"; tag="首跳证据不足 / 无法判定"; tagcol="$GRAY"
                 fi
                 printf "    %b  %s%-26s%s %s(%s · %s)%s  %s%d 域名%s  %s%s%s\n" \
                     "$marker" "$BOLD" "${route_isp[$key]}" "$R" "$DIM" "$asn_disp" "${route_cc[$key]}" "$R" "$BOLD" "$dcount" "$R" "$tagcol" "$tag" "$R"
@@ -1180,9 +1251,9 @@ run_check_pass() {
             done
         done
         if [[ $split_idx -ge 1 ]]; then
-            printf "  %s%s %s检测到分流: %d 条非默认线路, %d 个域名被分流到其他出口%s\n" "$BOLD" "$SYM_WARN" "$YELLOW" "$split_idx" "$split_domain_count" "$R"
+            printf "  %s%s %s复测发现首跳 ASN 差异: %d 组, %d 个域名疑似分流；不代表目标实际出口已改变%s\n" "$BOLD" "$SYM_WARN" "$YELLOW" "$split_idx" "$split_domain_count" "$R"
         else
-            printf "  %s%s %s可判定项目未发现首跳 ASN 差异；路径隐藏、失败及 ASN 未知项目不代表未分流%s\n" "$BOLD" "$SYM_INFO" "$GRAY" "$R"
+            printf "  %s%s %s未确认可比较的首跳 ASN 差异；路径隐藏、失败及证据不足项目不代表未分流%s\n" "$BOLD" "$SYM_INFO" "$GRAY" "$R"
         fi
 
         if [[ ${#path_order[@]} -gt 0 ]]; then
@@ -1265,7 +1336,7 @@ if [[ -n "$V6_IP" && ( "$PASS_MODE" == "auto" || "$PASS_MODE" == "v6-only" ) ]];
     detect_mtr_base_asn "-6" "V6" || true
 fi
 [[ $OUTPUT_JSON -eq 0 && "$PASS_MODE" == "auto" ]] && print_env_section "$DEFAULT_EGRESS" "$V4_IP" "$V6_IP" "$V4_INFO" "$V6_INFO"
-[[ $OUTPUT_JSON -eq 0 ]] && printf "\n  %s共 %d 个域名, 按分类逐组检测 (绿●=默认出口, 彩色●=分流)%s\n" "$DIM" "$TOTAL" "$R"
+[[ $OUTPUT_JSON -eq 0 ]] && printf "\n  %s共 %d 个域名, 按分类逐组检测 (绿●=首跳匹配, 黄●=复测差异, 灰⊘=无法判定)%s\n" "$DIM" "$TOTAL" "$R"
 TMP_V4_RESULTS="$(mktemp "$RUN_DIR/v4.XXXXXXXX")"
 TMP_V6_RESULTS="$(mktemp "$RUN_DIR/v6.XXXXXXXX")"
 chmod 600 "$TMP_V4_RESULTS" "$TMP_V6_RESULTS"
@@ -1283,10 +1354,12 @@ END_EPOCH=$(date +%s); ELAPSED=$((END_EPOCH - START_EPOCH)); ELAPSED_STR="$(form
 if [[ $OUTPUT_JSON -eq 0 ]]; then
     printf "\n"; rule_double 72
     if [[ $V4_PASS_RAN -eq 1 ]]; then
-        printf "  IPv4:  %s%d 域名%s   %s%d 条线路%s   %s%d 域名分流%s   %s%d 路径隐藏%s   %s%d 探测失败%s\n" "$GREEN" "$V4_OK" "$R" "$CYAN" "$V4_ROUTE_COUNT" "$R" "$YELLOW" "$V4_SPLIT_DOMAINS" "$R" "$GRAY" "$V4_HIDDEN" "$R" "$RED" "$V4_DOWN" "$R"
+        printf "  IPv4:  %s%d 域名%s   %s%d 种可见 ASN%s   %s%d 疑似分流%s   %s%d 路径隐藏%s   %s%d 探测失败%s\n" "$GREEN" "$V4_OK" "$R" "$CYAN" "$V4_ROUTE_COUNT" "$R" "$YELLOW" "$V4_SPLIT_DOMAINS" "$R" "$GRAY" "$V4_HIDDEN" "$R" "$RED" "$V4_DOWN" "$R"
+        printf "         %s%d 无法判定（包含隐藏、失败及首跳证据不足）%s\n" "$GRAY" "$V4_UNKNOWN" "$R"
     else printf "  IPv4:  %s skipped\n" "$SYM_SKIP"; fi
     if [[ $V6_PASS_RAN -eq 1 ]]; then
-        printf "  IPv6:  %s%d 域名%s   %s%d 条线路%s   %s%d 域名分流%s   %s%d 路径隐藏%s   %s%d 探测失败%s\n" "$GREEN" "$V6_OK" "$R" "$CYAN" "$V6_ROUTE_COUNT" "$R" "$YELLOW" "$V6_SPLIT_DOMAINS" "$R" "$GRAY" "$V6_HIDDEN" "$R" "$RED" "$V6_DOWN" "$R"
+        printf "  IPv6:  %s%d 域名%s   %s%d 种可见 ASN%s   %s%d 疑似分流%s   %s%d 路径隐藏%s   %s%d 探测失败%s\n" "$GREEN" "$V6_OK" "$R" "$CYAN" "$V6_ROUTE_COUNT" "$R" "$YELLOW" "$V6_SPLIT_DOMAINS" "$R" "$GRAY" "$V6_HIDDEN" "$R" "$RED" "$V6_DOWN" "$R"
+        printf "         %s%d 无法判定（包含隐藏、失败及首跳证据不足）%s\n" "$GRAY" "$V6_UNKNOWN" "$R"
     else printf "  IPv6:  %s skipped  %s%s%s\n" "$SYM_SKIP" "$DIM" "${V6_SKIP_REASON:-}" "$R"; fi
     printf "  %selapsed:%s %s\n" "$DIM" "$R" "$ELAPSED_STR"; rule_double 72
 fi

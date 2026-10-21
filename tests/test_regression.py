@@ -44,6 +44,28 @@ def report(*rows):
 
 
 class ParserTests(unittest.TestCase):
+    def test_route_evidence_retains_hop_depth_and_early_gaps(self):
+        cases=[
+            (report(row('10.0.0.1',number=1),row('1.1.1.1',number=2),row('104.18.33.45',number=3)),'2,0,0'),
+            (report(row('???',loss='100',number=1),row('1.1.1.1',number=2),row('104.18.33.45',number=3)),'2,1,0'),
+            (report(row('1.1.1.1',number=5),row('104.18.33.45',number=6)),'5,1,0'),
+            (report(row('1.1.1.1',number=1),'    8.8.8.8\n',row('104.18.33.45',number=2)),'1,0,1'),
+            (report(row('10.0.0.1',number=1),'    8.8.8.8\n',row('1.1.1.1',number=2),row('104.18.33.45',number=3)),'2,0,1'),
+            (report(row('1.1.1.1',number=1),row('???',loss='100',number=2),row('104.18.33.45',number=3)),'1,0,0'),
+        ]
+        for data,expected in cases:
+            result=shell(PROBE_CODE+'parse_mtr_report 104.18.33.45 1',data)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.stdout.rstrip('\n').split('\t')[3],expected)
+
+    def test_evidence_comparison_requires_depth_protocol_and_complete_prefix(self):
+        code=function('route_evidence_clean')+function('route_evidence_comparable')
+        for candidate,valid in [('2,0,0,icmp,1.1.1.1',True),('3,0,0,icmp,1.1.1.1',False),
+            ('2,1,0,icmp,1.1.1.1',False),('2,0,1,icmp,1.1.1.1',False),
+            ('2,0,0,tcp,1.1.1.1',False),('',False)]:
+            result=shell(code+f"route_evidence_comparable '2,0,0,icmp,8.8.8.8' '{candidate}'")
+            self.assertEqual(result.returncode==0,valid,candidate)
+
     def test_multipath_continuation_is_not_a_numbered_hop(self):
         data=report(row('10.0.0.1'), '        10.0.0.2\n',
                     row('1.1.1.1'), '        8.8.8.8\n',
@@ -237,6 +259,105 @@ class RealMtrTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name=='posix' and shutil.which('jq'), 'Linux integration requires jq')
 class IntegrationTests(unittest.TestCase):
+    def configure_route_evidence(self, probe_body, baseline_body=None):
+        self.rules.write_text('AI|example.com|||test\n')
+        self.env['PROBE_COUNTER']=str(self.base/'probe.count')
+        self.stub('getent', '''case "$*" in *google.com*) echo '8.8.8.8 STREAM google.com';; *) echo '104.18.33.45 STREAM example.com';; esac''')
+        self.stub('curl', '''case "$*" in
+ *-6*) exit 1;;
+ *ipinfo.io/1.1.1.1/json*) echo '{"country":"US","org":"AS13335 Other ISP"}';;
+ *ipinfo.io/2.2.2.2/json*) echo '{"country":"US","org":"AS9002 Third ISP"}';;
+ *ipinfo.io/*/json*) echo '{"country":"TW","org":"AS4780 Baseline"}';;
+ *) echo 203.73.217.1;; esac''')
+        baseline_body=baseline_body or "printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- 203.73.217.1 0.0% 3 1 1 1 1 0' '3.|-- 8.8.8.8 0.0% 3 1 1 1 1 0'"
+        self.stub('mtr','if [[ "${@: -1}" == 8.8.8.8 ]]; then\n'+baseline_body+'\nelse\n'+probe_body+'\nfi')
+
+    def test_missing_early_hop_not_false_split(self):
+        self.configure_route_evidence("printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- ??? 100.0 3 0 0 0 0 0' '3.|-- 1.1.1.1 0.0% 3 1 1 1 1 0' '4.|-- 104.18.33.45 0.0% 3 8 8 8 8 0'")
+        obj=json.loads(self.run_script('-4','--json').stdout)
+        self.assertIsNone(obj['ipv4']['split_routing_detected'])
+        self.assertIsNone(obj['ipv4']['results'][0]['split'])
+        self.assertEqual(obj['ipv4']['results'][0]['latency_ms'],8)
+        self.assertEqual(obj['ipv4']['results'][0]['first_hop_ttl'],3)
+        self.assertEqual(obj['ipv4']['summary']['unknown'],1)
+        text=self.run_script('-4','--no-color').stdout
+        self.assertNotIn('存在分流',text)
+        self.assertIn('无法判定',text)
+
+    def test_repeat_restores_missing_baseline_hop(self):
+        self.configure_route_evidence('''if [[ -e "$PROBE_COUNTER" ]]; then
+printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- 203.73.217.1 0.0% 3 1 1 1 1 0' '3.|-- 104.18.33.45 0.0% 3 9 9 9 9 0'
+else touch "$PROBE_COUNTER"
+printf '%s\\n' '1.|-- ??? 100.0 3 0 0 0 0 0' '2.|-- ??? 100.0 3 0 0 0 0 0' '3.|-- 1.1.1.1 0.0% 3 1 1 1 1 0' '4.|-- 104.18.33.45 0.0% 3 8 8 8 8 0'
+fi''')
+        obj=json.loads(self.run_script('-4','--json').stdout)
+        result=obj['ipv4']['results'][0]
+        self.assertFalse(result['split'])
+        self.assertEqual(result['first_hop'],'203.73.217.1')
+        self.assertEqual(result['latency_ms'],9)
+
+    def test_alternating_nonbaseline_hops_remain_unknown(self):
+        self.configure_route_evidence('''hop=1.1.1.1
+if [[ -e "$PROBE_COUNTER" ]]; then hop=2.2.2.2; else touch "$PROBE_COUNTER"; fi
+printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' "2.|-- $hop 0.0% 3 1 1 1 1 0" '3.|-- 104.18.33.45 0.0% 3 8 8 8 8 0'
+''')
+        result=json.loads(self.run_script('-4','--json').stdout)['ipv4']['results'][0]
+        self.assertIsNone(result['split'])
+        self.assertIn('不稳定',result['reason'])
+
+    def test_stable_difference_still_detected(self):
+        self.configure_route_evidence("printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- 1.1.1.1 0.0% 3 1 1 1 1 0' '3.|-- 104.18.33.45 0.0% 3 8 8 8 8 0'")
+        obj=json.loads(self.run_script('-4','--json').stdout)
+        self.assertTrue(obj['ipv4']['split_routing_detected'])
+        self.assertEqual(obj['ipv4']['results'][0]['comparison'],'repeatable_difference')
+        text=self.run_script('-4','--no-color').stdout
+        self.assertIn('疑似分流',text)
+        self.assertNotIn('被分流到其他出口',text)
+
+    def test_repeat_pins_target_and_protocol(self):
+        self.configure_route_evidence('''echo "$*" >> "$PROBE_COUNTER"
+printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- 1.1.1.1 0.0% 3 1 1 1 1 0' '3.|-- 104.18.33.45 0.0% 3 8 8 8 8 0' ''')
+        self.run_script('-4','--json')
+        probes=(self.base/'probe.count').read_text().splitlines()
+        self.assertEqual(len(probes),2)
+        self.assertEqual(probes[0],probes[1])
+        self.assertTrue(probes[0].endswith('104.18.33.45'))
+
+    def test_tcp_fallback_cannot_be_compared_to_icmp_baseline(self):
+        self.configure_route_evidence('''if [[ " $* " != *" -T "* ]]; then echo bad-report; exit; fi
+printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- 1.1.1.1 0.0% 3 1 1 1 1 0' '3.|-- 104.18.33.45 0.0% 3 8 8 8 8 0' ''')
+        obj=json.loads(self.run_script('-4','--json').stdout)
+        self.assertIsNone(obj['ipv4']['results'][0]['split'])
+
+    def test_same_asn_with_different_confidence_is_grouped_separately(self):
+        self.configure_route_evidence('''if [[ "${@: -1}" == 104.18.33.46 ]]; then
+printf '%s\\n' '1.|-- ??? 100.0 3 0 0 0 0 0' '2.|-- 203.73.217.1 0.0% 3 1 1 1 1 0' '3.|-- 104.18.33.46 0.0% 3 8 8 8 8 0'
+else
+printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- 203.73.217.1 0.0% 3 1 1 1 1 0' '3.|-- 104.18.33.45 0.0% 3 8 8 8 8 0'
+fi''')
+        self.rules.write_text('AI|example.com|||test\nAI|other.example|||test\n')
+        self.stub('getent', '''case "$*" in *google.com*) echo '8.8.8.8 STREAM';; *other.example*) echo '104.18.33.46 STREAM';; *) echo '104.18.33.45 STREAM';; esac''')
+        obj=json.loads(self.run_script('-4','--json').stdout)
+        self.assertEqual(obj['ipv4']['route_count'],1)
+        self.assertFalse(obj['ipv4']['results'][0]['split'])
+        self.assertIsNone(obj['ipv4']['results'][1]['split'])
+        self.assertIsNone(obj['ipv4']['split_routing_detected'])
+        text=self.run_script('-4','--no-color').stdout
+        self.assertIn('首跳证据不足 / 无法判定',text)
+        self.assertIn('可见首跳 ASN 与基准一致',text)
+
+    def test_alternate_responders_not_counted_as_split(self):
+        self.configure_route_evidence("printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- 1.1.1.1 0.0% 3 1 1 1 1 0' '        203.73.217.1' '3.|-- 104.18.33.45 0.0% 3 8 8 8 8 0'")
+        obj=json.loads(self.run_script('-4','--json').stdout)
+        self.assertIsNone(obj['ipv4']['results'][0]['split'])
+
+    def test_unreliable_reference_does_not_become_new_baseline(self):
+        self.configure_route_evidence("printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- 203.73.217.1 0.0% 3 1 1 1 1 0' '3.|-- 104.18.33.45 0.0% 3 8 8 8 8 0'",
+            "printf '%s\\n' '1.|-- ??? 100.0 3 0 0 0 0 0' '2.|-- 1.1.1.1 0.0% 3 1 1 1 1 0' '3.|-- 8.8.8.8 0.0% 3 1 1 1 1 0'")
+        obj=json.loads(self.run_script('-4','--json').stdout)
+        self.assertIsNone(obj['ipv4']['results'][0]['split'])
+        self.assertIn('基准',obj['ipv4']['results'][0]['reason'])
+
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(prefix='egress-tests-')
         self.addCleanup(self.tmp.cleanup)
