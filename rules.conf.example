@@ -11,7 +11,7 @@ AI|ai.google.dev|||Google AI Studio
 AI|perplexity.ai|||Perplexity
 AI|grok.com|||Grok
 AI|x.ai|||xAI
-AI|poe.com|||Poe
+AI|pixtv.ai|||PixTV
 AI|copilot.microsoft.com|||Microsoft Copilot
 AI|huggingface.co|||Hugging Face
 Social|x.com|||X
@@ -49,13 +49,11 @@ Search|yahoo.com|||Yahoo
 Search|baidu.com|||Baidu
 Search|yandex.com|||Yandex
 Search|brave.com|||Brave
-Search|startpage.com|||Startpage
 Developer|github.com|||GitHub
 Developer|gitlab.com|||GitLab
 Developer|npmjs.com|||npm
 Developer|pypi.org|||PyPI
 Developer|docker.com|||Docker
-Developer|registry-1.docker.io|||Docker Registry
 Developer|stackoverflow.com|||Stack Overflow
 Developer|cloudflare.com|||Cloudflare
 Developer|vercel.com|||Vercel
@@ -63,7 +61,6 @@ Developer|netlify.com|||Netlify
 Cloud|aws.amazon.com|||AWS
 Cloud|azure.microsoft.com|||Microsoft Azure
 Cloud|cloud.google.com|||Google Cloud
-Cloud|oraclecloud.com|||Oracle Cloud
 Cloud|digitalocean.com|||DigitalOcean
 Cloud|linode.com|||Linode
 Cloud|vultr.com|||Vultr
@@ -103,10 +100,7 @@ Ecommerce|shopee.com|||Shopee Global
 Ecommerce|shopee.sg|||Shopee Singapore
 Ecommerce|shopee.tw|||Shopee Taiwan
 Ecommerce|shopee.co.id|||Shopee Indonesia
-Ecommerce|shopee.co.th|||Shopee Thailand
 Ecommerce|shopee.vn|||Shopee Vietnam
-Ecommerce|shopee.com.my|||Shopee Malaysia
-Ecommerce|shopee.ph|||Shopee Philippines
 Ecommerce|shopee.com.br|||Shopee Brazil
 Ecommerce|lazada.com|||Lazada Global
 Ecommerce|lazada.sg|||Lazada Singapore

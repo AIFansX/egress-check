@@ -84,7 +84,7 @@ AI|ai.google.dev|||Google AI Studio
 AI|perplexity.ai|||Perplexity
 AI|grok.com|||Grok
 AI|x.ai|||xAI
-AI|poe.com|||Poe
+AI|pixtv.ai|||PixTV
 AI|copilot.microsoft.com|||Microsoft Copilot
 AI|huggingface.co|||Hugging Face
 Social|x.com|||X
@@ -122,13 +122,11 @@ Search|yahoo.com|||Yahoo
 Search|baidu.com|||Baidu
 Search|yandex.com|||Yandex
 Search|brave.com|||Brave
-Search|startpage.com|||Startpage
 Developer|github.com|||GitHub
 Developer|gitlab.com|||GitLab
 Developer|npmjs.com|||npm
 Developer|pypi.org|||PyPI
 Developer|docker.com|||Docker
-Developer|registry-1.docker.io|||Docker Registry
 Developer|stackoverflow.com|||Stack Overflow
 Developer|cloudflare.com|||Cloudflare
 Developer|vercel.com|||Vercel
@@ -136,7 +134,6 @@ Developer|netlify.com|||Netlify
 Cloud|aws.amazon.com|||AWS
 Cloud|azure.microsoft.com|||Microsoft Azure
 Cloud|cloud.google.com|||Google Cloud
-Cloud|oraclecloud.com|||Oracle Cloud
 Cloud|digitalocean.com|||DigitalOcean
 Cloud|linode.com|||Linode
 Cloud|vultr.com|||Vultr
@@ -176,10 +173,7 @@ Ecommerce|shopee.com|||Shopee Global
 Ecommerce|shopee.sg|||Shopee Singapore
 Ecommerce|shopee.tw|||Shopee Taiwan
 Ecommerce|shopee.co.id|||Shopee Indonesia
-Ecommerce|shopee.co.th|||Shopee Thailand
 Ecommerce|shopee.vn|||Shopee Vietnam
-Ecommerce|shopee.com.my|||Shopee Malaysia
-Ecommerce|shopee.ph|||Shopee Philippines
 Ecommerce|shopee.com.br|||Shopee Brazil
 Ecommerce|lazada.com|||Lazada Global
 Ecommerce|lazada.sg|||Lazada Singapore
@@ -995,6 +989,26 @@ print_result_row() {
         printf "      %b  %-*s  %-*s  %b  %-3s  %s%s%s\n" "$marker" "$domain_width" "$domain" "$ip_width" "$ip" "$latency_disp" "$cc" "$DIM" "$asn_isp" "$R"
     fi
 }
+print_route_summary_domains() {
+    local dlist="$1" is_split="$2" linecol="$3"
+    local d total=0 shown=0 cnt=0 lineout="      "
+    # Limit only baseline-matching groups; uncertain and split groups stay complete.
+    for d in $dlist; do
+        total=$((total+1))
+        if [[ "$is_split" == 0 && $shown -ge 10 ]]; then continue; fi
+        lineout+="$d  "; shown=$((shown+1)); cnt=$((cnt+1))
+        if [[ $cnt -eq 4 ]]; then
+            printf '%s%s%s\n' "$linecol" "$lineout" "$R"
+            lineout="      "; cnt=0
+        fi
+    done
+    [[ $cnt -gt 0 ]] && printf '%s%s%s\n' "$linecol" "$lineout" "$R"
+    if (( total > shown )); then
+        printf '      %s另有 %d 个域名未展开（完整列表见上方明细或 JSON）%s\n' "$linecol" "$((total-shown))" "$R"
+    fi
+    return 0
+}
+
 format_elapsed() {
     local s="$1"
     if (( s < 60 )); then printf '%ds' "$s"
@@ -1268,12 +1282,7 @@ run_check_pass() {
                 printf "    %b  %s%-26s%s %s(%s · %s)%s  %s%d 域名%s  %s%s%s\n" \
                     "$marker" "$BOLD" "${route_isp[$key]}" "$R" "$DIM" "$asn_disp" "${route_cc[$key]}" "$R" "$BOLD" "$dcount" "$R" "$tagcol" "$tag" "$R"
                 local linecol="$DIM"; [[ "${route_split[$key]}" == "1" ]] && linecol="$YELLOW"
-                local d cnt=0 lineout="      "
-                for d in $dlist; do
-                    lineout+="$d  "; cnt=$((cnt+1))
-                    if [[ $cnt -eq 4 ]]; then printf "%s%s%s\n" "$linecol" "$lineout" "$R"; lineout="      "; cnt=0; fi
-                done
-                [[ $cnt -gt 0 ]] && printf "%s%s%s\n" "$linecol" "$lineout" "$R"
+                print_route_summary_domains "$dlist" "${route_split[$key]}" "$linecol"
                 printf "\n"
             done
         done

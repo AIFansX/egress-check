@@ -211,13 +211,55 @@ for n in 49.9 50 200 200.1; do latency_color "$n"; printf '\\n'; done
         self.assertEqual(shell(code).stdout.splitlines(),
                          ['\x1b[32m','\x1b[33m','\x1b[33m','\x1b[38;5;130m'])
 
-    def test_rules_unchanged_and_identical(self):
+    def test_default_rules_identical_and_pruned(self):
         block=SOURCE.split("DEFAULT_RULES=$(cat <<'EOF'\n",1)[1].split('\nEOF',1)[0]
         clean=lambda s:[x for x in s.splitlines() if x and not x.startswith('#')]
         rules=clean(block)
         self.assertEqual(rules,clean((ROOT/'rules.conf.example').read_text(encoding='utf-8')))
-        self.assertEqual(len(rules),121)
-        self.assertEqual(len({r.split('|')[1] for r in rules}),121)
+        domains={r.split('|')[1] for r in rules}
+        self.assertEqual(len(rules),115)
+        self.assertEqual(len(domains),115)
+        self.assertIn('AI|pixtv.ai|||PixTV',rules)
+        self.assertTrue(domains.isdisjoint({'startpage.com','oraclecloud.com','registry-1.docker.io',
+                                           'shopee.co.th','shopee.com.my','shopee.ph','poe.com'}))
+        self.assertEqual({d for d in domains if d.startswith('shopee.')},
+            {'shopee.com','shopee.sg','shopee.tw','shopee.co.id','shopee.vn','shopee.com.br'})
+
+    def test_route_summary_domain_limit_only_for_baseline_matches(self):
+        code='set -euo pipefail\nR=""\n'+function('print_route_summary_domains')
+        cases=[(state,count) for state in (0,1,-1) for count in (0,1,9,10,11,25)]
+        for state,count in cases:
+            domains=' '.join(f'd{i:02d}.example' for i in range(count))
+            code+=f"printf 'CASE {state} {count}\\n'\nprint_route_summary_domains '{domains}' {state} ''\n"
+        result=shell(code)
+        self.assertEqual(result.returncode,0,result.stderr)
+        sections=re.split(r'^CASE -?\d+ \d+\n',result.stdout,flags=re.M)[1:]
+        self.assertEqual(len(sections),len(cases))
+        for (state,count),text in zip(cases,sections):
+            with self.subTest(state=state,count=count):
+                shown=min(count,10) if state==0 else count
+                self.assertEqual(re.findall(r'd\d+\.example',text),
+                                 [f'd{i:02d}.example' for i in range(shown)])
+                if count>shown: self.assertIn(f'另有 {count-shown} 个域名未展开',text)
+                else: self.assertNotIn('未展开',text)
+                lines=[s for s in text.splitlines() if '.example' in s]
+                self.assertEqual([len(s.split()) for s in lines],
+                                 [min(4,shown-i) for i in range(0,shown,4)])
+                self.assertTrue(all(s.startswith('      ') for s in lines))
+
+    def test_route_summary_colors_reset_and_multiple_groups(self):
+        code='set -euo pipefail\n'+function('set_colors')+function('print_route_summary_domains')
+        code+='USE_COLOR=1; set_colors\n'
+        domains=' '.join(f'd{i:02d}.example' for i in range(12))
+        code+=f'print_route_summary_domains "{domains}" 0 "$DIM"\n'
+        code+=f'print_route_summary_domains "{domains}" 1 "$YELLOW"\n'
+        result=shell(code)
+        self.assertEqual(result.returncode,0,result.stderr)
+        lines=result.stdout.splitlines()
+        self.assertEqual(len(lines),7)
+        self.assertTrue(all(s.endswith('\x1b[0m') for s in lines))
+        self.assertTrue(all(s.startswith('\x1b[33m      ') for s in lines[4:]))
+        self.assertIn('d11.example',lines[-1])
 
     def test_columns_and_colors(self):
         code=''.join(function(n) for n in ('set_colors','latency_color','format_latency_text','format_latency','print_result_row'))
