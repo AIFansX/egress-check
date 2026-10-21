@@ -113,7 +113,7 @@ AS22773 Cox Communications Inc. -> AS13335 Cloudflare, Inc.   12 域名
 - 默认规则由 116 个域名增加至 121 个域名
 
 <details>
-<summary>历史更新记录（点击展开）</summary>
+<summary>历史更多更新记录（点击展开）</summary>
 
 ### v2.17 修复
 
