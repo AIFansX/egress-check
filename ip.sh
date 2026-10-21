@@ -1059,7 +1059,7 @@ print_result_row() {
     fi
 }
 print_route_summary_domains() {
-    local dlist="$1" is_split="$2" linecol="$3"
+    local dlist="$1" is_split="$2" linecol="$3" overflow_style="${4:-message}"
     [[ "${COMPACT_OUTPUT:-0}" == 1 && "$is_split" == 0 ]] && return 0
     local d total=0 shown=0 cnt=0 lineout="      "
     # Limit only baseline-matching groups; uncertain and split groups stay complete.
@@ -1072,8 +1072,11 @@ print_route_summary_domains() {
             lineout="      "; cnt=0
         fi
     done
-    [[ $cnt -gt 0 ]] && printf '%s%s%s\n' "$linecol" "$lineout" "$R"
-    if (( total > shown )); then
+    if [[ $cnt -gt 0 ]]; then
+        [[ "$overflow_style" == ellipsis && $total -gt $shown ]] && lineout+="..."
+        printf '%s%s%s\n' "$linecol" "$lineout" "$R"
+    fi
+    if [[ "$overflow_style" != ellipsis && $total -gt $shown ]]; then
         printf '      %s另有 %d 个域名（完整列表见上方明细）%s\n' "$linecol" "$((total-shown))" "$R"
     fi
     return 0
@@ -1383,7 +1386,7 @@ run_check_pass() {
                 chain_disp="$(short_text "$chain" 58)"
                 dlist="${path_domains[$chain]}"
                 printf "    %s%-58s%s  %s%2d 域名%s\n" "$CYAN" "$chain_disp" "$R" "$BOLD" "${path_counts[$chain]}" "$R"
-                print_route_summary_domains "$dlist" 0 "$DIM"
+                print_route_summary_domains "$dlist" 0 "$DIM" ellipsis
             done
         fi
     fi

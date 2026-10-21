@@ -335,7 +335,7 @@ BOLD="" R="" DIM="" YELLOW="" GREEN="" GRAY="" CYAN="" SYM_SKIP="?" SYM_WARN="!"
 OUTPUT_JSON=0 PATH_SUMMARY_LIMIT=8
 render_fixture() {
  local label="$1" route_count=3 base_desc=baseline effective_base_asn=4780 split_idx=1 split_domain_count=25 split_color_n=1
- local -a SPLIT_COLORS=("") path_order=("test-path" "AS4780 Baseline" "AS4780 Baseline -> AS13335 Other" "AS47800 Other")
+ local -a SPLIT_COLORS=("") path_order=("test-path" "AS4780 Baseline" "AS4780 Baseline -> AS13335 Other" "AS47800 Other" "AS15169 Google")
  local -A route_split=([a]=0 [b]=1 [c]=-1) route_asn=([a]=4780 [b]=13335 [c]=9002)
  local -A route_isp=([a]=NormalISP [b]=OtherISP [c]=UnknownISP)
  local -A route_cc=([a]=TW [b]=US [c]=US) route_scidx=([b]=0)
@@ -344,7 +344,7 @@ render_fixture() {
         domains={key:' '.join(f'{key}{i:02d}.example' for i in range(count))
                  for key,count in [('a',85),('b',25),('c',12)]}
         code+=' local -A route_domains=('+ ' '.join(f'[{key}]="{value}"' for key,value in domains.items())+')\n'
-        path_cases=[('AS4780 Baseline','pb',62),('AS4780 Baseline -> AS13335 Other','pm',15),('AS47800 Other','po',12)]
+        path_cases=[('AS4780 Baseline','pb',62),('AS4780 Baseline -> AS13335 Other','pm',15),('AS47800 Other','po',12),('AS15169 Google','pe',10)]
         for chain,prefix,count in path_cases:
             path_list=' '.join(f'{prefix}{i:02d}.example' for i in range(count))
             code+=f' path_domains["{chain}"]="{path_list}"; path_counts["{chain}"]={count}\n'
@@ -378,7 +378,11 @@ render_fixture() {
                     self.assertEqual(re.findall(rf'{prefix}\d+\.example',text),
                                      [f'{prefix}{i:02d}.example' for i in range(expected)])
                 if not compact:
-                    self.assertIn('另有 52 个域名（完整列表见上方明细）',text)
+                    path_text=text.split(f'{label} 路径 ASN 摘要',1)[1]
+                    self.assertNotIn('完整列表见上方明细',path_text)
+                    for prefix in ('pb','pm','po'):
+                        self.assertIn(f'{prefix}08.example  {prefix}09.example  ...',path_text)
+                    self.assertNotIn('pe08.example  pe09.example  ...',path_text)
                     self.assertIn('62 域名',text)
                 self.assertNotIn('个域名未展开',text)
 
