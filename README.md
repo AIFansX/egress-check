@@ -52,7 +52,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.s
 
 ![Egress-Check 分流检测效果图](assets/egress-check-preview.png)
 
-## v2.19.1 紧急修复
+## v2.19.1 修复
 
 - 修复 v2.19 的 MTR 解析回归：MTR 0.95 的完全丢包行可能输出 `100.0`，不带 `%`。之前会把含此行的正常报告整份判失败，并触发无效重试；现在同时兼容两种写法。
 - 中间跳不回应不再导致整条路径失败；保留已获得的公网首跳。目标没有回应时，目标延迟仍显示 `-`，不会拿中间跳延迟代替。
