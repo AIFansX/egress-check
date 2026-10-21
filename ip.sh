@@ -1025,6 +1025,17 @@ path_asn_chain() {
     printf '%s' "$chain"
 }
 
+path_asn_summary() {
+    local chain="$1" first rest
+    first="${chain%% -> *}"
+    if [[ "$chain" == *" -> "* ]]; then
+        rest="${chain#* -> }"
+        printf '%s -> %s' "$first" "${rest%% -> *}"
+    else
+        printf '%s' "$first"
+    fi
+}
+
 print_result_row() {
     [[ $OUTPUT_JSON -eq 1 ]] && return 0
     local marker="$1" domain="$2" ip="$3" latency="$4" cc="$5" asn="$6" isp="$7" is_split="${8:-0}" asn_isp latency_disp
@@ -1287,17 +1298,18 @@ run_check_pass() {
             if [[ $is_split -eq 1 ]]; then route_scidx[$key]=$split_idx; split_idx=$((split_idx+1)); else route_scidx[$key]=-1; fi
         else route_domains[$key]+=" $domain"; fi
         [[ $is_split -eq 1 ]] && split_domain_count=$((split_domain_count+1))
-        local path_chain path_asn_ips
+        local path_chain path_asn_ips path_summary
         path_asn_ips="$path_ips"
         path_chain="$(path_asn_chain "$path_asn_ips")"
-        if [[ -n "$path_chain" ]]; then
-            if [[ -z "${path_counts[$path_chain]+x}" ]]; then
-                path_order+=("$path_chain")
-                path_counts[$path_chain]=0
-                path_domains[$path_chain]=""
+        path_summary="$(path_asn_summary "$path_chain")"
+        if [[ -n "$path_summary" ]]; then
+            if [[ -z "${path_counts[$path_summary]+x}" ]]; then
+                path_order+=("$path_summary")
+                path_counts[$path_summary]=0
+                path_domains[$path_summary]=""
             fi
-            path_counts[$path_chain]=$((path_counts[$path_chain]+1))
-            path_domains[$path_chain]+="$domain "
+            path_counts[$path_summary]=$((path_counts[$path_summary]+1))
+            path_domains[$path_summary]+="$domain "
         fi
         local marker
         local display_isp="$isp"

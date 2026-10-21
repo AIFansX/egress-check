@@ -222,6 +222,42 @@ first_public_hop -4 example.com
 
 
 class FormatAndRulesTests(unittest.TestCase):
+    def test_path_summary_groups_first_two_hops_and_preserves_full_chain(self):
+        code='set -euo pipefail\n'+function('path_asn_summary')
+        cases=[('', ''), ('AS4780 Seed', 'AS4780 Seed'),
+               ('AS4780 Seed -> AS9002 RETN', 'AS4780 Seed -> AS9002 RETN'),
+               ('AS4780 Seed -> AS9002 RETN -> AS2914 NTT', 'AS4780 Seed -> AS9002 RETN'),
+               ('AS4780 Seed -> AS9002 RETN -> AS32934 Meta', 'AS4780 Seed -> AS9002 RETN'),
+               ('AS4780 Seed -> AS2914 NTT', 'AS4780 Seed -> AS2914 NTT')]
+        for chain,expected in cases:
+            result=shell(code+f"path_asn_summary '{chain}'\n")
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.stdout,expected)
+
+        start=SOURCE.index('        local path_chain path_asn_ips path_summary')
+        end=SOURCE.index('\n        fi',SOURCE.index('path_domains[$path_summary]+=',start))+len('\n        fi')
+        block=SOURCE[start:end]
+        result=shell(code+'''
+declare -A path_counts=() path_domains=()
+declare -a path_order=()
+path_asn_chain() { printf '%s' "$path_ips"; }
+check_grouping() {
+i=0
+for tail in '' ' -> AS2914 NTT' ' -> AS32934 Meta'; do
+    path_ips="AS4780 Seed -> AS9002 RETN$tail"
+    domain="domain$i.example"
+    i=$((i+1))
+'''+block+'''
+    [[ "$path_chain" == "$path_ips" ]] || exit 10
+done
+printf '%s\\n' "${#path_order[@]}" "${path_order[0]}" "${path_counts[${path_order[0]}]}" "${path_domains[${path_order[0]}]}"
+}
+check_grouping
+''')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(result.stdout.splitlines(),['1','AS4780 Seed -> AS9002 RETN','3',
+                                                   'domain0.example domain1.example domain2.example '])
+
     def test_path_summary_skips_as0_and_preserves_other_valid_hops(self):
         code='set -euo pipefail\n'+''.join(function(n) for n in
              ('split_lookup_data','normalize_lookup_fields','short_text','path_asn_chain'))
