@@ -1062,7 +1062,7 @@ print_route_summary_domains() {
     done
     [[ $cnt -gt 0 ]] && printf '%s%s%s\n' "$linecol" "$lineout" "$R"
     if (( total > shown )); then
-        printf '      %s另有 %d 个域名未展开（完整列表见上方明细或 JSON）%s\n' "$linecol" "$((total-shown))" "$R"
+        printf '      %s另有 %d 个域名（完整列表见上方明细）%s\n' "$linecol" "$((total-shown))" "$R"
     fi
     return 0
 }
@@ -1365,15 +1365,12 @@ run_check_pass() {
             for chain in "${path_order[@]}"; do
                 (( shown >= max_paths )) && break
                 shown=$((shown+1))
-                local chain_disp dlist d cnt=0 lineout="      "
+                local chain_disp dlist path_state=-1
                 chain_disp="$(short_text "$chain" 58)"
                 dlist="${path_domains[$chain]}"
                 printf "    %s%-58s%s  %s%2d 域名%s\n" "$CYAN" "$chain_disp" "$R" "$BOLD" "${path_counts[$chain]}" "$R"
-                for d in $dlist; do
-                    lineout+="$d  "; cnt=$((cnt+1))
-                    if [[ $cnt -eq 4 ]]; then printf "%s%s%s\n" "$DIM" "$lineout" "$R"; lineout="      "; cnt=0; fi
-                done
-                [[ $cnt -gt 0 ]] && printf "%s%s%s\n" "$DIM" "$lineout" "$R"
+                if [[ -n "${effective_base_asn:-}" && "${chain%% *}" == "AS$effective_base_asn" && "$chain" != *' -> '* ]]; then path_state=0; fi
+                print_route_summary_domains "$dlist" "$path_state" "$DIM"
             done
             if (( ${#path_order[@]} > shown )); then
                 printf "      %s另有 %d 条路径模式未展开，可设置 PATH_SUMMARY_LIMIT 调整显示数量%s\n" "$DIM" "$((${#path_order[@]}-shown))" "$R"
