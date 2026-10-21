@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# 家宽VPS分流一键自查检测 Egress-Check v2.19      鸣谢：https://ip.net.coffee
+# 家宽VPS分流一键自查检测 Egress-Check v2.19.1      鸣谢：https://ip.net.coffee
 #
 # 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
 # ASN 差异是可见路由差异的线索，不能单独证明目标实际看到的出口或应用分流。
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-VERSION="2.19"
+VERSION="2.19.1"
 export LC_NUMERIC=C
 if (( BASH_VERSINFO[0] < 4 )); then
     printf 'Bash 4.0+ is required.\n' >&2; exit 1
@@ -680,7 +680,8 @@ parse_mtr_report() {
         gsub(/\r/,""); gsub(/\033\[[0-9;?]*[ -\/]*[@-~]/,"")
         if($1!~/^[0-9]+[.]/) next
         loss=0
-        for(i=2;i<=NF;i++) if($i~/^[0-9]+([.][0-9]+)?%$/) { loss=i; break }
+        # MTR 0.95 omits the percent sign for the full-width 100.0 loss value.
+        for(i=2;i<=NF;i++) if($i~/^[0-9]+([.][0-9]+)?%?$/) { loss=i; break }
         if(!loss) { if($0 !~ /waiting for reply/) malformed=1; next }
         rows++
         ip=""; display=""
@@ -733,7 +734,8 @@ first_public_hop() {
                 dbg_file="$dbg_dir/${ip_flag#-}-${domain}-${BASHPID}-${attempt}-${mode}.txt"
                 printf 'target: %s\nmode: %s\n--- output ---\n%s\n' "$target" "$mode" "$output" > "$dbg_file" 2>/dev/null || true
             fi
-            [[ -n "$output" ]] || { last_error="__PROBE_ERROR__"; continue; }
+            # A final timeout must not erase a more informative earlier error.
+            [[ -n "$output" ]] || continue
             parsed="$(printf '%s\n' "$output" | parse_mtr_report "$target")"
             IFS=$'\t' read -r hop latency path_ips <<< "$parsed"
             case "$hop" in
