@@ -107,7 +107,11 @@ class ParserTests(unittest.TestCase):
         variants = ['awk']
         for name in ('gawk', 'mawk', 'old-mawk'):
             if shutil.which(name): variants.append(name)
-        if shutil.which('mawk'): variants.append('mawk -W traditional')
+        if shutil.which('mawk'):
+            # Older mawk is already interval-free and may not know this option.
+            option = subprocess.run(['mawk','-W','traditional','BEGIN {exit}'],capture_output=True)
+            if option.returncode == 0 and not option.stderr:
+                variants.append('mawk -W traditional')
         if shutil.which('busybox'): variants.append('busybox awk')
         data=report(row('10.0.0.1'),row('168.95.98.254'),row('104.18.33.45'))
         for variant in variants:
