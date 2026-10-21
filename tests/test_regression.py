@@ -226,7 +226,7 @@ set_colors
                 self.assertEqual(result.returncode,0,result.stderr)
                 self.assertEqual(result.stdout.strip(),expected)
                 if '-I' in args:
-                    self.assertIn('请输入 0-7 [1]',result.stderr)
+                    self.assertIn('请输入 0-7 [默认1]',result.stderr)
                     self.assertIn('0) 简洁模式',result.stderr)
                     self.assertIn('1) 【默认】完整检测',result.stderr)
 
@@ -681,7 +681,7 @@ esac''')
         self.assertNotIn('路径 ASN 摘要',result.stdout)
         self.assertIn('2 域名',result.stdout)
         self.assertNotIn('example.com',result.stdout.split('线路分流汇总',1)[1])
-        self.assertIn('请输入 0-7 [1]',result.stderr)
+        self.assertIn('请输入 0-7 [默认1]',result.stderr)
 
     def test_probe_deadline(self):
         code=PROBE_CODE+'''

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# 家宽VPS分流一键自查检测 Egress-Check v2.19.3      鸣谢：https://ip.net.coffee
+# 家宽VPS分流一键自查检测 Egress-Check v2.19.4      鸣谢：https://ip.net.coffee
 #
 # 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
 # ASN 差异是可见路由差异的线索，不能单独证明目标实际看到的出口或应用分流。
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-VERSION="2.19.3"
+VERSION="2.19.4"
 export LC_NUMERIC=C
 if (( BASH_VERSINFO[0] < 4 )); then
     printf 'Bash 4.0+ is required.\n' >&2; exit 1
@@ -243,7 +243,7 @@ interactive_menu() {
 
 EOF
     local choice cat_name
-    printf "请输入 0-7 [1]: "
+    printf "请输入 0-7 [默认1]: "
     IFS= read -r choice
     choice="${choice:-1}"
     case "$choice" in
