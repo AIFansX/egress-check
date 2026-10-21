@@ -342,7 +342,7 @@ render_fixture() {
                     self.assertIn(f'{label} 路径 ASN 摘要',text)
                     self.assertIn('另有 75 个域名（完整列表见上方明细）',text)
                 for chain,prefix,count in path_cases:
-                    expected=0 if compact else min(count,10) if prefix=='pb' else count
+                    expected=0 if compact else min(count,10)
                     self.assertEqual(re.findall(rf'{prefix}\d+\.example',text),
                                      [f'{prefix}{i:02d}.example' for i in range(expected)])
                 if not compact:
