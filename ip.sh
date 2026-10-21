@@ -1362,8 +1362,10 @@ run_check_pass() {
         done
         if [[ $split_idx -ge 1 ]]; then
             printf "  %s%s %s复测发现首跳 ASN 差异: %d 组, %d 个域名疑似分流；不代表目标实际出口已改变%s\n" "$BOLD" "$SYM_WARN" "$YELLOW" "$split_idx" "$split_domain_count" "$R"
+        elif [[ $unknown_count -eq 0 ]]; then
+            printf "  %s%s %s所有域名走同一出口（AS%s） - 未检测到分流%s\n" "$BOLD" "$SYM_INFO" "$GREEN" "$effective_base_asn" "$R"
         else
-            printf "  %s%s %s未确认可比较的首跳 ASN 差异；路径隐藏、失败及证据不足项目不代表未分流%s\n" "$BOLD" "$SYM_INFO" "$GRAY" "$R"
+            printf "  %s%s %s本轮 %d 个域名无法判定%s\n" "$BOLD" "$SYM_INFO" "$GRAY" "$unknown_count" "$R"
         fi
 
         if [[ $COMPACT_OUTPUT -eq 0 && ${#path_order[@]} -gt 0 ]]; then

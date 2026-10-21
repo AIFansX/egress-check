@@ -511,6 +511,7 @@ printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' "2.|-- $hop 0.0% 3 1 1 1 1 0" '
         text=self.run_script('-4','--no-color').stdout
         self.assertIn('疑似分流',text)
         self.assertNotIn('被分流到其他出口',text)
+        self.assertNotIn('未检测到分流',text)
 
     def test_repeat_pins_target_and_protocol(self):
         self.configure_route_evidence('''echo "$*" >> "$PROBE_COUNTER"
@@ -547,6 +548,7 @@ fi''')
         text=self.run_script('-4','--no-color').stdout
         self.assertNotIn('首跳证据不足 / 无法判定',text)
         self.assertIn('符合预期（未分流）',text)
+        self.assertIn('所有域名走同一出口（AS4780） - 未检测到分流',text)
 
     def test_same_asn_ignores_depth_protocol_and_alternate_responders(self):
         reports=[
@@ -735,6 +737,8 @@ esac''')
         text=self.run_script('-4','--no-color').stdout
         self.assertIn('ASN 未知',text)
         self.assertNotIn('符合预期',text)
+        self.assertNotIn('未检测到分流',text)
+        self.assertIn('本轮 2 个域名无法判定',text)
 
     def test_overlapping_runs(self):
         processes=[subprocess.Popen([BASH,str(ROOT/'ip.sh'),'-4','--json'],env=self.env,
