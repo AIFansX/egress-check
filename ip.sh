@@ -916,9 +916,20 @@ repeat_char() { local c="$1" w="$2" r; printf -v r "%${w}s" ""; printf '%s' "${r
 rule_double() { printf "%s%s%s\n" "$CYAN" "$(repeat_char "━" "${1:-72}")" "$R"; }
 rule_single() { printf "%s%s%s" "$GRAY" "$(repeat_char "─" "${1:-60}")" "$R"; }
 print_banner() {
+    local stamp="$2" display_date display_time display_zone
+    display_date="${stamp%%T*}"
+    display_time="${stamp#*T}"
+    display_zone="${display_time:8}"
+    display_time="${display_time:0:8}"
+    case "$display_zone" in
+        Z) display_zone="UTC" ;;
+        [+-]????) display_zone="UTC${display_zone:0:3}:${display_zone:3:2}" ;;
+        [+-]??:??) display_zone="UTC$display_zone" ;;
+    esac
     rule_double 72
     printf "  %s家宽VPS分流一键自查检测%s  %sEgress-Check v%s%s     %s鸣谢：%s%s\n" "$BOLD" "$R" "$CYAN" "$VERSION" "$R" "$GRAY" "$BRAND_URL" "$R"
-    printf "  %shost%s: %s%s%s     %s%s%s\n" "$DIM" "$R" "$BOLD" "$1" "$R" "$GRAY" "$2" "$R"
+    printf "  %s主机%s  %s%s%s\n" "$DIM" "$R" "$BOLD" "$1" "$R"
+    printf "  %s日期%s  %s    %s时间%s  %s    %s时区%s  %s\n" "$DIM" "$R" "$display_date" "$DIM" "$R" "$display_time" "$DIM" "$R" "$display_zone"
     rule_double 72
 }
 print_env_section() {
