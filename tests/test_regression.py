@@ -222,6 +222,35 @@ first_public_hop -4 example.com
 
 
 class FormatAndRulesTests(unittest.TestCase):
+    def test_path_summary_skips_as0_and_preserves_other_valid_hops(self):
+        code='set -euo pipefail\n'+''.join(function(n) for n in
+             ('split_lookup_data','normalize_lookup_fields','short_text','path_asn_chain'))
+        code+='''
+lookup_ip() {
+ case "$1" in
+  seed) printf '4780\\tDigital United Inc.\\tTW' ;;
+  meta) printf '32934\\tFacebook, Inc.\\tUS' ;;
+  zero) printf '0\\tMeta Platforms Ireland Limited\\tIE' ;;
+  ntt) printf '2914\\tNTT America, Inc.\\tUS' ;;
+  akamai) printf '20940\\tAkamai\\tUS' ;;
+  *) printf '\\tUnknown\\t??' ;;
+ esac
+}
+'''
+        cases=[
+            ('seed meta zero','AS4780 Digital United Inc. -> AS32934 Facebook, Inc.'),
+            ('seed meta','AS4780 Digital United Inc. -> AS32934 Facebook, Inc.'),
+            ('seed meta zero meta','AS4780 Digital United Inc. -> AS32934 Facebook, Inc.'),
+            ('seed ntt','AS4780 Digital United Inc. -> AS2914 NTT America, Inc.'),
+            ('seed ntt akamai','AS4780 Digital United Inc. -> AS2914 NTT America, Inc. -> AS20940 Akamai'),
+            ('seed ntt seed','AS4780 Digital United Inc. -> AS2914 NTT America, Inc. -> AS4780 Digital United Inc.'),
+            ('zero missing',''),
+        ]
+        for path,expected in cases:
+            result=shell(code+f"path_asn_chain '{path}'\n")
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.stdout,expected,path)
+
     def test_compact_menu_and_default_choice(self):
         start=SOURCE.index('while [[ $# -gt 0 ]]; do')
         end=SOURCE.index('\nfor setting in MTR_TIMEOUT',start)

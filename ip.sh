@@ -1013,7 +1013,7 @@ path_asn_chain() {
         data="$(lookup_ip "$ip" || true)"
         split_lookup_data "$data" asn isp country
         normalize_lookup_fields asn isp country
-        [[ -z "$asn" ]] && continue
+        [[ -z "$asn" || "$asn" == 0 ]] && continue
         [[ "$asn" == "$prev_asn" ]] && continue
         prev_asn="$asn"
         label="AS$asn"
