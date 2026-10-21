@@ -408,7 +408,8 @@ render_fixture() {
                     self.assertNotIn('NormalISP',text)
                 else:
                     self.assertIn(f'{label} 路径 ASN 摘要',text)
-                    self.assertIn('另有 75 个域名（完整列表见上方明细）',text)
+                    self.assertIn('a08.example  a09.example  ...',text)
+                    self.assertNotIn('完整列表见上方明细',text)
                 for chain,prefix,count in path_cases:
                     expected=0 if compact else min(count,10)
                     self.assertEqual(re.findall(rf'{prefix}\d+\.example',text),
@@ -459,10 +460,11 @@ for n in 49.9 50 200 200.1; do latency_color "$n"; printf '\\n'; done
                 shown=min(count,10) if state==0 else count
                 self.assertEqual(re.findall(r'd\d+\.example',text),
                                  [f'd{i:02d}.example' for i in range(shown)])
-                if count>shown: self.assertIn(f'另有 {count-shown} 个域名（完整列表见上方明细）',text)
-                else: self.assertNotIn('未展开',text)
+                if count>shown: self.assertIn('d08.example  d09.example  ...\n',text)
+                else: self.assertNotIn('...',text)
+                self.assertNotIn('完整列表见上方明细',text)
                 lines=[s for s in text.splitlines() if '.example' in s]
-                self.assertEqual([len(s.split()) for s in lines],
+                self.assertEqual([len(s.replace('...', '').split()) for s in lines],
                                  [min(4,shown-i) for i in range(0,shown,4)])
                 self.assertTrue(all(s.startswith('      ') for s in lines))
 
@@ -475,9 +477,10 @@ for n in 49.9 50 200 200.1; do latency_color "$n"; printf '\\n'; done
         result=shell(code)
         self.assertEqual(result.returncode,0,result.stderr)
         lines=result.stdout.splitlines()
-        self.assertEqual(len(lines),7)
+        self.assertEqual(len(lines),6)
         self.assertTrue(all(s.endswith('\x1b[0m') for s in lines))
-        self.assertTrue(all(s.startswith('\x1b[33m      ') for s in lines[4:]))
+        self.assertIn('d09.example  ...\x1b[0m',lines[2])
+        self.assertTrue(all(s.startswith('\x1b[33m      ') for s in lines[3:]))
         self.assertIn('d11.example',lines[-1])
 
     def test_columns_and_colors(self):

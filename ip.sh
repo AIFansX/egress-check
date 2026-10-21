@@ -1070,7 +1070,7 @@ print_result_row() {
     fi
 }
 print_route_summary_domains() {
-    local dlist="$1" is_split="$2" linecol="$3" overflow_style="${4:-message}"
+    local dlist="$1" is_split="$2" linecol="$3" overflow_style="${4:-ellipsis}"
     [[ "${COMPACT_OUTPUT:-0}" == 1 && "$is_split" == 0 ]] && return 0
     local d total=0 shown=0 cnt=0 lineout="      "
     # Limit only baseline-matching groups; uncertain and split groups stay complete.
