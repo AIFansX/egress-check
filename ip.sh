@@ -1382,9 +1382,6 @@ run_check_pass() {
                 printf "    %s%-58s%s  %s%2d 域名%s\n" "$CYAN" "$chain_disp" "$R" "$BOLD" "${path_counts[$chain]}" "$R"
                 print_route_summary_domains "$dlist" 0 "$DIM"
             done
-            if (( ${#path_order[@]} > shown )); then
-                printf "      %s另有 %d 条路径模式未展开，可设置 PATH_SUMMARY_LIMIT 调整显示数量%s\n" "$DIM" "$((${#path_order[@]}-shown))" "$R"
-            fi
         fi
     fi
 }
