@@ -66,6 +66,15 @@ class ParserTests(unittest.TestCase):
             result=shell(code+f"route_evidence_comparable '2,0,0,icmp,8.8.8.8' '{candidate}'")
             self.assertEqual(result.returncode==0,valid,candidate)
 
+    def test_repeat_filter_keeps_useful_checks_and_skips_protocol_mismatch(self):
+        code=''.join(function(n) for n in ('route_evidence_clean','route_evidence_comparable','route_repeat_needed'))
+        for evidence,asn,needed in [('2,0,0,icmp,1.1.1.1','4780',False),
+            ('2,0,0,icmp,1.1.1.1','13335',True),('3,1,0,icmp,1.1.1.1','4780',True),
+            ('2,0,1,icmp,1.1.1.1','13335',True),('2,0,0,tcp,1.1.1.1','13335',False),
+            ('2,0,0,icmp,1.1.1.1','',False)]:
+            result=shell(code+f"route_repeat_needed '2,0,0,icmp,8.8.8.8' '{evidence}' 4780 '{asn}'")
+            self.assertEqual(result.returncode==0,needed,(evidence,asn))
+
     def test_multipath_continuation_is_not_a_numbered_hop(self):
         data=report(row('10.0.0.1'), '        10.0.0.2\n',
                     row('1.1.1.1'), '        8.8.8.8\n',
@@ -324,10 +333,13 @@ printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- 1.1.1.1 0.0% 3 1 1 1 1 0
         self.assertTrue(probes[0].endswith('104.18.33.45'))
 
     def test_tcp_fallback_cannot_be_compared_to_icmp_baseline(self):
-        self.configure_route_evidence('''if [[ " $* " != *" -T "* ]]; then echo bad-report; exit; fi
+        self.configure_route_evidence('''echo "$*" >> "$PROBE_COUNTER"
+if [[ " $* " != *" -T "* ]]; then echo bad-report; exit; fi
 printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' '2.|-- 1.1.1.1 0.0% 3 1 1 1 1 0' '3.|-- 104.18.33.45 0.0% 3 8 8 8 8 0' ''')
         obj=json.loads(self.run_script('-4','--json').stdout)
         self.assertIsNone(obj['ipv4']['results'][0]['split'])
+        # Only the initial ICMP/TCP pair; no futile extra TCP report.
+        self.assertEqual(len((self.base/'probe.count').read_text().splitlines()),2)
 
     def test_same_asn_with_different_confidence_is_grouped_separately(self):
         self.configure_route_evidence('''if [[ "${@: -1}" == 104.18.33.46 ]]; then
@@ -516,18 +528,25 @@ first_public_hop -4 example.com
         self.assertLess(time.monotonic()-start,5)
 
     def test_signal_cleanup_does_not_remove_other_runs(self):
+        self.signal_cleanup_case()
+
+    def test_repeat_signal_cleanup_does_not_remove_other_runs(self):
+        self.signal_cleanup_case(repeat=True)
+
+    def signal_cleanup_case(self, repeat=False):
         survivor=self.cache/'.run.other-instance'; survivor.mkdir()
         marker=self.base/'worker.pid'
         run_dir=self.cache/'.run.signal-test'; run_dir.mkdir()
+        (run_dir/'0').write_text('1.1.1.1\t8\t1.1.1.1\t2,0,0,icmp,104.18.33.45')
         code='set -eu\n'+''.join(function(n) for n in ('run_mtr_group','stop_tree','cleanup_tmp'))+'''
 OUTPUT_JSON=1 MTR_CONCURRENCY=1 SPIN_PID="" TMP_V4_RESULTS="" TMP_V6_RESULTS="" FINAL_JSON=""
 ACTIVE_WORKERS=(); DOMAINS=(a)
 trap 'exit 143' TERM
 trap cleanup_tmp EXIT
 first_public_hop() { echo "$BASHPID" > "$PID_FILE"; sleep 20; }
-run_mtr_group -4 "$RUN_DIR" AI 0
+run_mtr_group -4 "$RUN_DIR" AI ${REPEAT_FLAG:-} 0
 '''
-        p=subprocess.Popen([BASH,'-c',code],env={**self.env,'RUN_DIR':str(run_dir),'PID_FILE':str(marker)},
+        p=subprocess.Popen([BASH,'-c',code],env={**self.env,'RUN_DIR':str(run_dir),'PID_FILE':str(marker),'REPEAT_FLAG':'--repeat' if repeat else ''},
                            text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         try:
             deadline=time.monotonic()+5
@@ -561,6 +580,38 @@ for i in 0 1 2 3 4 5; do [[ $(cat "$RUN_DIR/$i") == done ]] || exit 1; done
         start=time.monotonic(); result=shell(code,env=self.env)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertGreaterEqual(time.monotonic()-start,0.8)
+
+    def test_repeat_workers_are_bounded_and_keep_pinned_probe_arguments(self):
+        code='set -eu\n'+''.join(function(n) for n in ('run_mtr_group','stop_tree','cleanup_tmp'))+'''
+OUTPUT_JSON=1 SPIN_PID="" TMP_V4_RESULTS="" TMP_V6_RESULTS="" FINAL_JSON=""
+ACTIVE_WORKERS=(); DOMAINS=(a b c d e f)
+RUN_DIR=$(mktemp -d)
+trap cleanup_tmp EXIT
+first_public_hop() {
+ [[ "$3" == 104.18.33.45 && "$4" == icmp && "$MTR_ATTEMPTS" == 1 ]] || exit 9
+ printf '+ %s\\n' "$BASHPID" >> "$EVENTS"
+ sleep 0.3
+ printf -- '- %s\\n' "$BASHPID" >> "$EVENTS"
+ printf verified
+}
+for i in 0 1 2 3 4 5; do
+ printf '1.1.1.1\\t8\\t1.1.1.1\\t2,0,0,icmp,104.18.33.45' > "$RUN_DIR/$i"
+done
+run_mtr_group -4 "$RUN_DIR" AI --repeat 0 1 2 3 4 5
+for i in 0 1 2 3 4 5; do [[ $(cat "$RUN_DIR/$i.repeat") == verified ]] || exit 10; done
+'''
+        for concurrency,expected_peak in ((1,1),(6,2)):
+            events=self.base/f'events-{concurrency}'
+            result=shell(code,env={**self.env,'MTR_CONCURRENCY':str(concurrency),'EVENTS':str(events)})
+            self.assertEqual(result.returncode,0,result.stderr)
+            active=set(); peak=0
+            for event in events.read_text().splitlines():
+                action,pid=event.split()
+                if action=='+': active.add(pid)
+                else: active.remove(pid)
+                peak=max(peak,len(active))
+            self.assertEqual(peak,expected_peak)
+            self.assertFalse(active)
 
 
 if __name__=='__main__': unittest.main(verbosity=2)

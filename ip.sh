@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# 家宽VPS分流一键自查检测 Egress-Check v2.19.2      鸣谢：https://ip.net.coffee
+# 家宽VPS分流一键自查检测 Egress-Check v2.19.3      鸣谢：https://ip.net.coffee
 #
 # 用 mtr 取每个域名的"第一个公网跳", 按 ASN 自动分组上色, 直接可视化线路分流.
 # ASN 差异是可见路由差异的线索，不能单独证明目标实际看到的出口或应用分流。
@@ -18,7 +18,7 @@
 
 set -euo pipefail
 
-VERSION="2.19.2"
+VERSION="2.19.3"
 export LC_NUMERIC=C
 if (( BASH_VERSINFO[0] < 4 )); then
     printf 'Bash 4.0+ is required.\n' >&2; exit 1
@@ -785,6 +785,16 @@ route_evidence_comparable() {
     [[ "$base_ttl" == "$ttl" && "$base_mode" == "$mode" ]]
 }
 
+route_repeat_needed() {
+    local base_evidence="$1" evidence="$2" base_asn="$3" asn="$4" base_mode mode target _
+    [[ -n "$asn" && -n "$base_asn" ]] && route_evidence_clean "$base_evidence" || return 1
+    IFS=, read -r _ _ _ base_mode _ <<< "$base_evidence"
+    IFS=, read -r _ _ _ mode target <<< "$evidence"
+    # A fixed-protocol retry cannot repair a mismatch with the reference protocol.
+    [[ -n "$target" && "$mode" == "$base_mode" ]] || return 1
+    [[ "$asn" != "$base_asn" ]] || ! route_evidence_comparable "$base_evidence" "$evidence"
+}
+
 detect_mtr_base_asn() {
     local ip_flag="$1" prefix="$2" hop_line hop latency path_ips evidence data asn isp country info
     local repeat_line repeat_hop repeat_evidence mode target _
@@ -994,18 +1004,21 @@ format_elapsed() {
 
 run_mtr_group() {
     local ip_flag="$1" out_dir="$2" cat="$3"; shift 3
+    local phase=probe suffix="" action="检测中"
+    if [[ "${1:-}" == --repeat ]]; then phase=repeat; suffix=.repeat; action="复核中"; shift; fi
     local -a idxs=("$@")
     local total=${#idxs[@]} maxjobs="${MTR_CONCURRENCY:-6}" idx pid
     local -a pending=()
     ACTIVE_WORKERS=()
     [[ "$maxjobs" =~ ^[0-9]+$ ]] || maxjobs="$(default_mtr_concurrency)"
     (( maxjobs < 1 )) && maxjobs=1
+    if [[ "$phase" == repeat ]] && (( maxjobs > 2 )); then maxjobs=2; fi
     if [[ $OUTPUT_JSON -eq 0 ]] && is_tty; then
         ( k=0
           while :; do
-              cnt=0; for ix in "${idxs[@]}"; do [[ -f "$out_dir/$ix" ]] && cnt=$((cnt+1)); done
+              cnt=0; for ix in "${idxs[@]}"; do [[ -f "$out_dir/$ix$suffix" ]] && cnt=$((cnt+1)); done
               k=$(( (k % 5) + 1 )); d=$(printf '%*s' "$k" '' | tr ' ' '.')
-              printf "\r    %s检测中%s %s%s 组%s%-6s %s(%s/%s)%s" "$CYAN" "$R" "$BOLD" "$cat" "$R" "$d" "$DIM" "$cnt" "$total" "$R"
+              printf "\r    %s%s%s %s%s 组%s%-6s %s(%s/%s)%s" "$CYAN" "$action" "$R" "$BOLD" "$cat" "$R" "$d" "$DIM" "$cnt" "$total" "$R"
               sleep 0.3
           done ) &
         SPIN_PID=$!
@@ -1021,9 +1034,14 @@ run_mtr_group() {
             (( ${#ACTIVE_WORKERS[@]} < maxjobs )) || sleep 0.1
         done
         (
-            local hop; hop="$(first_public_hop "$ip_flag" "${DOMAINS[$idx]}")"
-            printf '%s' "$hop" > "$out_dir/$idx.tmp"
-            mv -- "$out_dir/$idx.tmp" "$out_dir/$idx"
+            local hop evidence mode target _
+            if [[ "$phase" == repeat ]]; then
+                IFS=$'\t' read -r _ _ _ evidence < "$out_dir/$idx" || true
+                IFS=, read -r _ _ _ mode target <<< "$evidence"
+                hop="$(MTR_ATTEMPTS=1 first_public_hop "$ip_flag" "${DOMAINS[$idx]}" "$target" "$mode" || true)"
+            else hop="$(first_public_hop "$ip_flag" "${DOMAINS[$idx]}")"; fi
+            printf '%s' "$hop" > "$out_dir/$idx$suffix.tmp"
+            mv -- "$out_dir/$idx$suffix.tmp" "$out_dir/$idx$suffix"
         ) &
         ACTIVE_WORKERS+=("$!")
     done
@@ -1087,6 +1105,22 @@ run_check_pass() {
         read -r -a gidxs <<< "${cat_idxs[$cat]}"
         run_mtr_group "$ip_flag" "$out_dir" "$cat" "${gidxs[@]}"
         local idx
+        local -a repeat_idxs=()
+        # Resolve each initial hop once, then schedule only useful rechecks.
+        for idx in "${gidxs[@]}"; do
+            local initial_hop initial_evidence initial_data initial_asn initial_isp initial_country _
+            IFS=$'\t' read -r initial_hop _ _ initial_evidence < "$out_dir/$idx" || true
+            [[ -n "$initial_hop" && "$initial_hop" != __* ]] || continue
+            if [[ -n "${hop_lookup[$initial_hop]+set}" ]]; then initial_data="${hop_lookup[$initial_hop]}"
+            else initial_data="$(lookup_ip "$initial_hop" || true)"; fi
+            split_lookup_data "$initial_data" initial_asn initial_isp initial_country
+            normalize_lookup_fields initial_asn initial_isp initial_country
+            initial_data="$(printf '%s\t%s\t%s' "$initial_asn" "$initial_isp" "$initial_country")"
+            if [[ "$(lookup_score "$initial_data")" -ge 3 ]]; then hop_lookup[$initial_hop]="$initial_data"; fi
+            printf '%s' "$initial_data" > "$out_dir/$idx.lookup"
+            if route_repeat_needed "$base_evidence" "$initial_evidence" "$effective_base_asn" "$initial_asn"; then repeat_idxs+=("$idx"); fi
+        done
+        if (( ${#repeat_idxs[@]} > 0 )); then run_mtr_group "$ip_flag" "$out_dir" "$cat" --repeat "${repeat_idxs[@]}"; fi
         for idx in "${gidxs[@]}"; do
         local cat_v="$cat" domain="${DOMAINS[$idx]}" note="${NOTES[$idx]}"
         local hop_line hop latency path_ips evidence
@@ -1117,20 +1151,13 @@ run_check_pass() {
             continue
         fi
         local data asn isp country
-        if [[ -n "${hop_lookup[$hop]+set}" ]]; then
-            data="${hop_lookup[$hop]}"
-        else
-            data="$(lookup_ip "$hop" || true)"
-        fi
+        data="$(cat "$out_dir/$idx.lookup" 2>/dev/null || true)"
         split_lookup_data "$data" asn isp country
         normalize_lookup_fields asn isp country
         local confirmed=0 comparison_reason="" comparison="inconclusive"
-        local ttl mode target repeat_line repeat_hop repeat_latency repeat_path repeat_evidence repeat_data repeat_asn repeat_isp repeat_country _
-        IFS=, read -r ttl _ _ mode target <<< "$evidence"
-        # Retry only suspect routes, pinning both destination IP and protocol.
-        if [[ -n "$base_evidence" && -n "$asn" && -n "$effective_base_asn" && -n "$target" ]] &&
-           { [[ "$asn" != "$effective_base_asn" ]] || ! route_evidence_comparable "$base_evidence" "$evidence"; }; then
-            repeat_line="$(MTR_ATTEMPTS=1 first_public_hop "$ip_flag" "$domain" "$target" "$mode" || true)"
+        local ttl repeat_line repeat_hop repeat_latency repeat_path repeat_evidence repeat_data repeat_asn repeat_isp repeat_country _
+        if [[ -f "$out_dir/$idx.repeat" ]]; then
+            repeat_line="$(cat "$out_dir/$idx.repeat")"
             IFS=$'\t' read -r repeat_hop repeat_latency repeat_path repeat_evidence <<< "$repeat_line"
             if [[ -n "$repeat_hop" && "$repeat_hop" != __* ]] && route_evidence_comparable "$base_evidence" "$repeat_evidence"; then
                 repeat_data="$(lookup_ip "$repeat_hop" || true)"
@@ -1197,7 +1224,7 @@ run_check_pass() {
         [[ $is_split -eq 1 ]] && split_json="true"
         local latency_json="null"; [[ "$latency" =~ ^[0-9]+([.][0-9]+)?$ ]] && latency_json="$latency"
         local ttl_json="null"
-        IFS=, read -r ttl _ _ mode target <<< "$evidence"
+        IFS=, read -r ttl _ _ _ _ <<< "$evidence"
         [[ "$ttl" =~ ^[1-9][0-9]*$ ]] && ttl_json="$ttl"
         if [[ -z "$asn" ]]; then
             jq -n --arg c "$cat_v" --arg d "$domain" --arg h "$hop" --argjson lat "$latency_json" --arg chain "$path_chain" --arg isp "$isp" --arg cc "$country" --argjson sp "$split_json" --arg note "$note" --argjson ttl "$ttl_json" --arg comparison "$comparison" --arg reason "$comparison_reason" \
