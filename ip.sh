@@ -681,7 +681,7 @@ parse_mtr_report() {
         if($1!~/^[0-9]+[.]/) next
         loss=0
         # MTR 0.95 omits the percent sign for the full-width 100.0 loss value.
-        for(i=2;i<=NF;i++) if($i~/^[0-9]+([.][0-9]+)?%?$/) { loss=i; break }
+        for(i=2;i<=NF;i++) if($i~/^[0-9]+([.][0-9]*)?%?$/) { loss=i; break }
         if(!loss) { if($0 !~ /waiting for reply/) malformed=1; next }
         rows++
         ip=""; display=""
@@ -690,10 +690,11 @@ parse_mtr_report() {
             key=norm(candidate)
             if(key!="") { ip=key; display=candidate; break }
         }
-        if($(loss+1)!~/^[0-9]+$/ || $(loss+3)!~/^[0-9]+([.][0-9]+)?$/) { malformed=1; next }
+        # Large report values may be printed as "1028." to fit MTR columns.
+        if($(loss+1)!~/^[0-9]+$/ || $(loss+3)!~/^[0-9]+([.][0-9]*)?$/) { malformed=1; next }
         if($loss+0>=100 || $(loss+1)+0==0) next
         if(ip=="") { malformed=1; next }
-        if(ip==target) { reached=1; latency=$(loss+3); next }
+        if(ip==target) { reached=1; latency=$(loss+3); sub(/[.]$/,".0",latency); next }
         if(!private_ip(ip)) {
             if(first=="") first=display
             if(ip!=previous) { path=path (path=="" ? "" : " ") display; previous=ip }

@@ -44,6 +44,13 @@ def report(*rows):
 
 
 class ParserTests(unittest.TestCase):
+    def test_mtr_large_values_with_trailing_decimal_point(self):
+        data=report(row('192.168.43.1','4457.'),row('1.1.1.1','1028.'),
+                    row('104.18.33.45','230.4'))
+        self.assertEqual(self.parse(data),['1.1.1.1','230.4','1.1.1.1'])
+        self.assertEqual(self.parse(report(row('104.18.33.45','1234.'))),
+                         ['__HIDDEN__','1234.0',''])
+
     def test_mtr_095_real_loss_column_shape(self):
         # Captured MTR 0.95 report layout; host and addresses are anonymized.
         data=(ROOT/'tests/fixtures/mtr-095-loss-report.txt').read_text()
@@ -122,6 +129,8 @@ class ParserTests(unittest.TestCase):
                 self.assertEqual(self.parse(report(row('???','0.0','100.0')),awk=variant)[0], '__NO_REPLY__')
                 fixture=(ROOT/'tests/fixtures/mtr-095-loss-report.txt').read_text()
                 self.assertEqual(self.parse(fixture,awk=variant),['1.1.1.1','1.5','1.1.1.1'])
+                self.assertEqual(self.parse(report(row('1.1.1.1','1028.'),
+                    row('104.18.33.45','1234.')),awk=variant),['1.1.1.1','1234.0','1.1.1.1'])
 
     def test_retry_reuses_target_and_tcp_fallback(self):
         code=PROBE_CODE + '''
@@ -267,6 +276,12 @@ esac''')
         self.assertEqual(obj['ipv4']['summary']['down'],0)
         self.assertEqual(obj['ipv4']['results'][0]['first_hop'],'1.1.1.1')
         self.assertEqual(obj['ipv4']['results'][0]['latency_ms'],1.5)
+
+    def test_large_mtr_values_through_json(self):
+        self.stub('mtr', "printf '%s\\n' '1.|-- 203.73.217.1 0.0% 3 1028. 1028. 1028. 1028. 0.0' '2.|-- 104.18.33.45 0.0% 3 1234. 1234. 1234. 1234. 0.0'")
+        obj=json.loads(self.run_script('-4','--json').stdout)
+        self.assertEqual(obj['ipv4']['summary']['ok'],2)
+        self.assertEqual(obj['ipv4']['results'][0]['latency_ms'],1234)
 
     def test_same_ip_lookup_is_cached(self):
         self.env['LOOKUP_LOG']=str(self.base/'lookup.log')
