@@ -203,6 +203,122 @@ first_public_hop -4 example.com
 
 
 class FormatAndRulesTests(unittest.TestCase):
+    def test_compact_menu_and_default_choice(self):
+        start=SOURCE.index('while [[ $# -gt 0 ]]; do')
+        end=SOURCE.index('\nfor setting in MTR_TIMEOUT',start)
+        code='set -euo pipefail\n'+''.join(function(n) for n in
+             ('set_colors','err','default_mtr_concurrency','usage','interactive_menu'))
+        code+='''
+VERSION=test BRAND_URL=example.com PASS_MODE=auto COMPACT_OUTPUT=0 INTERACTIVE=0
+OUTPUT_JSON=0 USE_COLOR=0 ONLY_CAT=""
+set_colors
+'''
+        cases=[('-I','0\n','auto 1'),('-I','1\n','auto 0'),('-I','\n','auto 0'),
+               ('--compact',None,'auto 1'),('',None,'auto 0'),
+               ('--compact -I','1\n','auto 0')]
+        for args,answer,expected in cases:
+            with self.subTest(args=args,answer=answer):
+                # Feed menu input inside Bash to avoid Windows text-mode CRLF conversion.
+                menu_input='exec <<< "$MENU_ANSWER"\n' if answer is not None else ''
+                result=shell(code+menu_input+f'set -- {args}\n'+SOURCE[start:end]+
+                             '\nprintf "%s %s\\n" "$PASS_MODE" "$COMPACT_OUTPUT"\n',
+                             env={'MENU_ANSWER':(answer or '').rstrip('\n')})
+                self.assertEqual(result.returncode,0,result.stderr)
+                self.assertEqual(result.stdout.strip(),expected)
+                if '-I' in args:
+                    self.assertIn('请输入 0-7 [1]',result.stderr)
+                    self.assertIn('0) 简洁模式',result.stderr)
+                    self.assertIn('1) 【默认】完整检测',result.stderr)
+
+    def test_compact_rows_hide_ip_asn_and_keep_status_colors_and_alignment(self):
+        code='set -euo pipefail\n'+''.join(function(n) for n in
+             ('set_colors','latency_color','format_latency_text','format_latency','print_result_row'))
+        code+='''
+OUTPUT_JSON=0 COMPACT_OUTPUT=1 DOMAIN_WIDTH=28
+for USE_COLOR in 0 1; do
+ set_colors
+ for IP_WIDTH in 15 39; do
+  ip=203.73.217.1
+  [[ $IP_WIDTH == 39 ]] && ip=2001:4860:1234:5678:9abc:def0:1234:5678
+  for latency in 0.8 15.9 198.6 999.9 1000 -; do
+   print_result_row "${GREEN}●${R}" a.example "$ip" "$latency" TW 4780 'Sample ISP' 0 '可见首跳 ASN 与基准一致'
+   print_result_row "${YELLOW}●${R}" long-domain.example "$ip" "$latency" US 13335 'Other ISP' 1 '复测首跳 ASN 差异'
+   print_result_row "${GRAY}⊘${R}" unknown.example "$ip" "$latency" TW 4780 'Sample ISP' -1 '首跳证据不足 / 无法判定'
+  done
+ done
+ print_result_row "${GRAY}⊘${R}" hidden.example - 9.0 -- '' '路径隐藏 / 仅目标可见' 0
+ print_result_row "${RED}✗${R}" failed.example - - -- '' 'DNS 解析失败' 0
+done
+'''
+        result=shell(code)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertNotIn('203.73.217.1',result.stdout)
+        self.assertNotIn('2001:4860:',result.stdout)
+        self.assertNotIn('AS4780',result.stdout)
+        self.assertNotIn('ISP',result.stdout)
+        self.assertNotIn('可见首跳 ASN 与基准一致',result.stdout)
+        plain=re.sub(r'\x1b\[[0-9;]*m','',result.stdout)
+        self.assertIn('目标未回应',plain)
+        self.assertIn('DNS 解析失败',plain)
+        self.assertIn('路径隐藏 / 仅目标可见',plain)
+        self.assertIn('首跳证据不足 / 无法判定',plain)
+        lines=plain.splitlines()
+        self.assertEqual(len(lines),76)
+        self.assertEqual(len({re.search(r' (TW|US|--)($| )',s).start() for s in lines}),1)
+        split_lines=[s for s in result.stdout.splitlines() if 'long-domain.example' in s]
+        self.assertEqual(len(split_lines),24)
+        self.assertTrue(all('⮜ 疑似分流' in s for s in split_lines))
+        self.assertTrue(all('\x1b[33m' in s and s.endswith('\x1b[0m') for s in split_lines[12:]))
+        normal_lines=[s for s in result.stdout.splitlines() if 'a.example' in s]
+        self.assertIn('\x1b[32m',normal_lines[12])
+        self.assertIn('\x1b[33m',normal_lines[14])
+        self.assertIn('\x1b[38;5;130m',normal_lines[15])
+
+    def test_compact_summary_hides_only_matching_domains_and_path_section(self):
+        start=SOURCE.index('    if [[ $OUTPUT_JSON -eq 0 && $route_count -gt 0 ]]; then')
+        end=SOURCE.index('\n}\n',start)
+        code='set -euo pipefail\n'+function('print_route_summary_domains')+'''
+rule_single() { printf '%s' '---'; }
+short_text() { printf '%s' "$1"; }
+BOLD="" R="" DIM="" YELLOW="" GREEN="" GRAY="" CYAN="" SYM_SKIP="?" SYM_WARN="!" SYM_INFO="i"
+OUTPUT_JSON=0 PATH_SUMMARY_LIMIT=8
+render_fixture() {
+ local label="$1" route_count=3 base_desc=baseline split_idx=1 split_domain_count=25 split_color_n=1
+ local -a SPLIT_COLORS=("") path_order=("test-path")
+ local -A route_split=([a]=0 [b]=1 [c]=-1) route_asn=([a]=4780 [b]=13335 [c]=9002)
+ local -A route_isp=([a]=NormalISP [b]=OtherISP [c]=UnknownISP)
+ local -A route_cc=([a]=TW [b]=US [c]=US) route_scidx=([b]=0)
+ local -A path_domains=([test-path]="path-only.example") path_counts=([test-path]=1)
+'''
+        domains={key:' '.join(f'{key}{i:02d}.example' for i in range(count))
+                 for key,count in [('a',85),('b',25),('c',12)]}
+        code+=' local -A route_domains=('+ ' '.join(f'[{key}]="{value}"' for key,value in domains.items())+')\n'
+        code+=SOURCE[start:end]+'\n}\n'
+        cases=[(compact,label) for compact in (0,1) for label in ('IPv4','IPv6')]
+        for compact,label in cases:
+            code+=f'COMPACT_OUTPUT={compact}; printf "CASE {compact} {label}\\n"; render_fixture {label}\n'
+        result=shell(code)
+        self.assertEqual(result.returncode,0,result.stderr)
+        sections=re.split(r'^CASE [01] IPv[46]\n',result.stdout,flags=re.M)[1:]
+        self.assertEqual(len(sections),4)
+        for (compact,label),text in zip(cases,sections):
+            with self.subTest(compact=compact,label=label):
+                self.assertIn('85 域名',text)
+                self.assertIn('25 域名',text)
+                self.assertIn('12 域名',text)
+                self.assertEqual(re.findall(r'a\d+\.example',text),
+                                 [] if compact else [f'a{i:02d}.example' for i in range(10)])
+                for key,count in [('b',25),('c',12)]:
+                    self.assertEqual(re.findall(rf'{key}\d+\.example',text),
+                                     [f'{key}{i:02d}.example' for i in range(count)])
+                if compact:
+                    self.assertNotIn('路径 ASN 摘要',text)
+                    self.assertNotIn('path-only.example',text)
+                    self.assertNotIn('NormalISP',text)
+                else:
+                    self.assertIn(f'{label} 路径 ASN 摘要',text)
+                    self.assertIn('另有 75 个域名未展开',text)
+
     def test_latency_boundaries(self):
         code=function('set_colors')+function('latency_color')+'''
 USE_COLOR=1; set_colors
@@ -555,6 +671,17 @@ esac''')
         result=self.run_script('-I',input='6\n')
         self.assertEqual(json.loads(result.stdout)['ipv4']['summary']['total'],2)
         self.assertIn('请输入',result.stderr)
+
+    def test_compact_keeps_full_json_and_menu_selection(self):
+        normal=json.loads(self.run_script('-4','--json').stdout)
+        compact=json.loads(self.run_script('-4','--compact','--json').stdout)
+        self.assertEqual(normal['ipv4'],compact['ipv4'])
+        self.assertEqual(normal['ipv6'],compact['ipv6'])
+        result=self.run_script('-I','--no-color',input='0\n')
+        self.assertNotIn('路径 ASN 摘要',result.stdout)
+        self.assertIn('2 域名',result.stdout)
+        self.assertNotIn('example.com',result.stdout.split('线路分流汇总',1)[1])
+        self.assertIn('请输入 0-7 [1]',result.stderr)
 
     def test_probe_deadline(self):
         code=PROBE_CODE+'''

@@ -57,6 +57,7 @@ fi
 
 PASS_MODE="auto"
 OUTPUT_JSON=0
+COMPACT_OUTPUT=0
 INTERACTIVE=0
 ONLY_CAT=""
 MTR_TIMEOUT="${MTR_TIMEOUT:-20}"
@@ -212,10 +213,11 @@ usage() {
 Usage: $(basename "$0") [options]
   (no flag)      自动: 网络环境 + IPv4 线路分流 + IPv6 线路分流
   -I, --interactive
-                 交互菜单: 输入 1-7 选择检测模式
+                 交互菜单: 输入 0-7 选择检测模式，默认 1
   -4, --ipv4     只跑 IPv4
   -6, --ipv6     只跑 IPv6
   --json         JSON 输出
+  --compact      简洁报告，不显示路径 ASN 摘要及正常组域名
   --no-color     关闭颜色
   --low-resource 低并发低压力模式
   --only <CAT>   只跑指定分类
@@ -230,7 +232,8 @@ interactive_menu() {
 家宽VPS分流一键自查检测 Egress-Check v${VERSION}
 请选择检测模式:
 
-  1) 默认完整检测      网络环境 + IPv4 + IPv6
+  0) 简洁模式          在完整检测之后，尽可能简洁的展示结果
+  1) 【默认】完整检测  网络环境 + IPv4 + IPv6，完整结果
   2) 只检测 IPv4
   3) 只检测 IPv6
   4) 只检测指定分类    AI / Social / Streaming / Search / Developer / Cloud / Crypto / Gaming
@@ -240,11 +243,12 @@ interactive_menu() {
 
 EOF
     local choice cat_name
-    printf "请输入 1-7 [1]: "
+    printf "请输入 0-7 [1]: "
     IFS= read -r choice
     choice="${choice:-1}"
     case "$choice" in
-        1) PASS_MODE="auto" ;;
+        0) PASS_MODE="auto"; COMPACT_OUTPUT=1 ;;
+        1) PASS_MODE="auto"; COMPACT_OUTPUT=0 ;;
         2) PASS_MODE="v4-only" ;;
         3) PASS_MODE="v6-only" ;;
         4)
@@ -274,6 +278,7 @@ while [[ $# -gt 0 ]]; do
         -4|--ipv4)  PASS_MODE="v4-only" ;;
         -6|--ipv6)  PASS_MODE="v6-only" ;;
         --json)     OUTPUT_JSON=1 ;;
+        --compact)  COMPACT_OUTPUT=1 ;;
         --no-color) USE_COLOR=0; set_colors ;;
         --low-resource)
             MTR_CONCURRENCY="${MTR_CONCURRENCY:-$(default_mtr_concurrency)}"
@@ -980,6 +985,22 @@ print_result_row() {
     [[ "$isp" == "null" ]] && isp="Unknown"
     if [[ -z "$asn" ]]; then asn_isp="$isp"; else asn_isp="AS${asn} ${isp}"; fi
     local domain_width="${DOMAIN_WIDTH:-24}" ip_width="${IP_WIDTH:-15}"
+    if [[ "${COMPACT_OUTPUT:-0}" == 1 ]]; then
+        local status=""
+        [[ "$is_split" == -1 ]] && status="${9:-无法判定}"
+        if [[ "$is_split" == 1 ]]; then
+            latency_disp="$(printf '%s%s%s' "$YELLOW" "$(format_latency_text "$latency")" "$R")"
+            printf "      %b  %s%-*s  %b  %s%-3s  ⮜ 疑似分流%s\n" "$marker" "$YELLOW" "$domain_width" "$domain" "$latency_disp" "$YELLOW" "$cc" "$R"
+        else
+            [[ -z "$asn" && "$is_split" != -1 ]] && status="$isp"
+            [[ "$latency" == - && "$ip" != - ]] && status+=" (目标未回应)"
+            latency_disp="$(format_latency "$latency")"
+            printf "      %b  %-*s  %b  %-3s" "$marker" "$domain_width" "$domain" "$latency_disp" "$cc"
+            [[ -n "$status" ]] && printf "  %s%s%s" "$DIM" "$status" "$R"
+            printf '\n'
+        fi
+        return 0
+    fi
     # All markers occupy one display cell, including color-disabled output.
     if [[ "$is_split" == "1" ]]; then
         latency_disp="$(printf '%s%s%s' "$YELLOW" "$(format_latency_text "$latency")" "$R")"
@@ -991,6 +1012,7 @@ print_result_row() {
 }
 print_route_summary_domains() {
     local dlist="$1" is_split="$2" linecol="$3"
+    [[ "${COMPACT_OUTPUT:-0}" == 1 && "$is_split" == 0 ]] && return 0
     local d total=0 shown=0 cnt=0 lineout="      "
     # Limit only baseline-matching groups; uncertain and split groups stay complete.
     for d in $dlist; do
@@ -1231,7 +1253,7 @@ run_check_pass() {
         elif [[ $is_split -eq 0 ]]; then marker="${GREEN}●${R}"
         else marker="$SYM_SKIP"; display_isp+=" ($comparison_reason)"; fi
         [[ "$latency" == "-" ]] && display_isp+=" (目标未回应)"
-        [[ $OUTPUT_JSON -eq 0 ]] && print_result_row "$marker" "$domain" "$hop" "$latency" "$country" "$asn" "$display_isp" "$is_split"
+        [[ $OUTPUT_JSON -eq 0 ]] && print_result_row "$marker" "$domain" "$hop" "$latency" "$country" "$asn" "$display_isp" "$is_split" "$comparison_reason"
         [[ $first_json -eq 0 ]] && printf ',\n' >> "$tmp_file"; first_json=0
         local split_json="null"
         [[ $is_split -eq 0 ]] && split_json="false"
@@ -1279,8 +1301,12 @@ run_check_pass() {
                 else
                     marker="$SYM_SKIP"; tag="首跳证据不足 / 无法判定"; tagcol="$GRAY"
                 fi
-                printf "    %b  %s%-26s%s %s(%s · %s)%s  %s%d 域名%s  %s%s%s\n" \
-                    "$marker" "$BOLD" "${route_isp[$key]}" "$R" "$DIM" "$asn_disp" "${route_cc[$key]}" "$R" "$BOLD" "$dcount" "$R" "$tagcol" "$tag" "$R"
+                if [[ $COMPACT_OUTPUT -eq 1 && "${route_split[$key]}" == 0 ]]; then
+                    printf "    %s%d 域名%s  %s%s%s\n" "$BOLD" "$dcount" "$R" "$tagcol" "$tag" "$R"
+                else
+                    printf "    %b  %s%-26s%s %s(%s · %s)%s  %s%d 域名%s  %s%s%s\n" \
+                        "$marker" "$BOLD" "${route_isp[$key]}" "$R" "$DIM" "$asn_disp" "${route_cc[$key]}" "$R" "$BOLD" "$dcount" "$R" "$tagcol" "$tag" "$R"
+                fi
                 local linecol="$DIM"; [[ "${route_split[$key]}" == "1" ]] && linecol="$YELLOW"
                 print_route_summary_domains "$dlist" "${route_split[$key]}" "$linecol"
                 printf "\n"
@@ -1292,7 +1318,7 @@ run_check_pass() {
             printf "  %s%s %s未确认可比较的首跳 ASN 差异；路径隐藏、失败及证据不足项目不代表未分流%s\n" "$BOLD" "$SYM_INFO" "$GRAY" "$R"
         fi
 
-        if [[ ${#path_order[@]} -gt 0 ]]; then
+        if [[ $COMPACT_OUTPUT -eq 0 && ${#path_order[@]} -gt 0 ]]; then
             local max_paths="$PATH_SUMMARY_LIMIT"
             [[ "$max_paths" =~ ^[0-9]+$ ]] || max_paths=8
             (( max_paths < 1 )) && max_paths=1

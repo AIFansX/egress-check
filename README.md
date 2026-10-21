@@ -12,10 +12,11 @@
 bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.sh) -I
 ```
 
-运行后输入 `1-7` 选择检测模式：
+运行后输入 `0-7` 选择检测模式，直接回车默认选择 `1`：
 
 ```text
-1) 默认完整检测      网络环境 + IPv4 + IPv6
+0) 简洁模式          在完整检测之后，尽可能简洁的展示结果
+1) 【默认】完整检测  网络环境 + IPv4 + IPv6，完整结果
 2) 只检测 IPv4
 3) 只检测 IPv6
 4) 只检测指定分类    AI / Social / Streaming / Search / Developer / Cloud / Crypto / Gaming
@@ -61,8 +62,10 @@ bash <(curl -Ls https://raw.githubusercontent.com/AIFansX/egress-check/main/ip.s
 - `首跳证据不足 / 无法判定`：前面跳点缺失、同一跳多个回应 IP、跳数或探测协议与基准不同、基准或异常复测不稳定。这些项目不计入疑似分流，也不标为“未分流”
 - DNS、解析、探测失败会显示各自原因，失败不再伪装成路径隐藏
 - 延迟列：VPS 到本次选定目标 IP 的 MTR Avg，`<50ms` 绿色，`50–200ms` 黄色，`>200ms` 棕色；分流行整行黄色。目标未回应时显示 `-`，不以中途节点代替。达到 1000ms 时表格显示 `999+ms`，JSON 保留实际数值。TCP 回退测得的是 TCP 探测延迟，不是网页或应用响应时间
-- 底部汇总：按可见 ASN 与判定状态分组。与基准一致的每组最多展开 10 个域名，超出部分提示省略数量；疑似分流和无法判定组全部展开。标题数量、上方检测明细及 JSON 保留完整数据。不同 ASN 数量不等于不同真实出口数量
+- 底部汇总：按可见 ASN 与判定状态分组。完整模式下，与基准一致的每组最多展开 10 个域名；简洁模式下只显示这类组的数量和状态，不展开域名。两种模式均完整展示疑似分流和无法判定组的域名，统计数量、上方检测明细及 JSON 不受影响。不同 ASN 数量不等于不同真实出口数量
 - 路径 ASN 摘要：辅助观察到达目标前的中途 ASN 变化，不直接等同于分流判断
+
+简洁模式执行与完整模式相同的检测：明细只保留状态标记、域名、目标延迟、国家及必要的分流标记或异常原因，隐藏首跳 IP、ASN 和运营商，颜色不变；不显示 IPv4 / IPv6 路径 ASN 摘要，正常组汇总只显示数量和状态。也可追加 `--compact` 直接运行；与 `--json` 同用时仍输出完整 JSON 数据。
 
 ![Egress-Check 路径 ASN 摘要效果图](assets/path-asn-summary-preview.png)
 
@@ -230,6 +233,7 @@ cp rules.conf.example rules.conf
 ```bash
 ./ip.sh -I              # 交互菜单
 ./ip.sh                 # 默认完整检测
+./ip.sh --compact       # 同样完整检测，报告更简洁
 ./ip.sh -4              # 只跑 IPv4
 ./ip.sh -6              # 只跑 IPv6
 ./ip.sh --only Social   # 只跑某个分类
