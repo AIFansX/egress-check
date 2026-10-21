@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -16,6 +17,9 @@ BASH = os.environ.get('TEST_BASH', shutil.which('bash') or 'bash')
 
 def function(name):
     start = SOURCE.index(name + '() {')
+    first_line = SOURCE[start:SOURCE.index('\n', start)]
+    if first_line.endswith('}'):
+        return first_line + '\n'
     end = SOURCE.index('\n}', start) + 2
     return SOURCE[start:end] + '\n'
 
@@ -100,6 +104,9 @@ class ParserTests(unittest.TestCase):
         for variant in variants:
             with self.subTest(awk=variant):
                 self.assertEqual(self.parse(data,awk=variant)[0], '168.95.98.254')
+                self.assertEqual(self.parse(report(row('fe80::1'),row('2001:4860::1'),
+                    row('2607:6bc0:0:0:0:0:0:10')), '2607:6bc0::10', variant)[0], '2001:4860::1')
+                self.assertEqual(self.parse(report(row('???','0.0','100.0')),awk=variant)[0], '__NO_REPLY__')
 
     def test_retry_reuses_target_and_tcp_fallback(self):
         code=PROBE_CODE + '''
@@ -119,6 +126,14 @@ first_public_hop -4 example.com
 
 
 class FormatAndRulesTests(unittest.TestCase):
+    def test_latency_boundaries(self):
+        code=function('set_colors')+function('latency_color')+'''
+USE_COLOR=1; set_colors
+for n in 49.9 50 200 200.1; do latency_color "$n"; printf '\\n'; done
+'''
+        self.assertEqual(shell(code).stdout.splitlines(),
+                         ['\x1b[32m','\x1b[33m','\x1b[33m','\x1b[38;5;130m'])
+
     def test_rules_unchanged_and_identical(self):
         block=SOURCE.split("DEFAULT_RULES=$(cat <<'EOF'\n",1)[1].split('\nEOF',1)[0]
         clean=lambda s:[x for x in s.splitlines() if x and not x.startswith('#')]
@@ -183,9 +198,9 @@ esac''')
         file.write_text('#!/usr/bin/env bash\n'+body+'\n')
         file.chmod(0o755)
 
-    def run_script(self,*args,expected=0,env=None):
+    def run_script(self,*args,expected=0,env=None,input=None):
         result=subprocess.run([BASH,str(ROOT/'ip.sh'),*args],env=env or self.env,
-            text=True,encoding='utf-8',capture_output=True,timeout=30)
+            text=True,encoding='utf-8',capture_output=True,timeout=30,input=input)
         self.assertEqual(result.returncode,expected,result.stderr+'\n'+result.stdout)
         self.assertFalse(list(self.cache.glob('.run.*')))
         return result
@@ -250,6 +265,54 @@ esac''')
     def test_bad_arguments_and_empty_category(self):
         for args in (('--only',),('--rules',),('--rules','/missing/rules.conf'),('--only','Absent')):
             with self.subTest(args=args): self.run_script(*args,expected=1)
+
+    def test_menu_low_resource_and_json(self):
+        result=self.run_script('-I','--json',input='5\n')
+        self.assertEqual(json.loads(result.stdout)['ipv4']['summary']['total'],2)
+        result=self.run_script('-I',input='6\n')
+        self.assertEqual(json.loads(result.stdout)['ipv4']['summary']['total'],2)
+        self.assertIn('请输入',result.stderr)
+
+    def test_probe_deadline(self):
+        code=PROBE_CODE+'''
+MTR_BUDGET=1 MTR_TIMEOUT=10 MTR_ATTEMPTS=4 MTR_COUNT=3 MTR_MAXTTL=30 MTR_NICE=10
+resolve_target() { printf '104.18.33.45'; }
+first_public_hop -4 example.com
+'''
+        self.stub('mtr','sleep 20')
+        start=time.monotonic()
+        result=shell(code,env=self.env,timeout=6)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('__PROBE_ERROR__',result.stdout)
+        self.assertLess(time.monotonic()-start,5)
+
+    def test_signal_cleanup_does_not_remove_other_runs(self):
+        survivor=self.cache/'.run.other-instance'; survivor.mkdir()
+        marker=self.base/'worker.pid'
+        run_dir=self.cache/'.run.signal-test'; run_dir.mkdir()
+        code='set -eu\n'+''.join(function(n) for n in ('run_mtr_group','stop_tree','cleanup_tmp'))+'''
+OUTPUT_JSON=1 MTR_CONCURRENCY=1 SPIN_PID="" TMP_V4_RESULTS="" TMP_V6_RESULTS="" FINAL_JSON=""
+ACTIVE_WORKERS=(); DOMAINS=(a)
+trap 'exit 143' TERM
+trap cleanup_tmp EXIT
+first_public_hop() { echo "$BASHPID" > "$PID_FILE"; sleep 20; }
+run_mtr_group -4 "$RUN_DIR" AI 0
+'''
+        p=subprocess.Popen([BASH,'-c',code],env={**self.env,'RUN_DIR':str(run_dir),'PID_FILE':str(marker)},
+                           text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        try:
+            deadline=time.monotonic()+5
+            while not marker.exists() and time.monotonic()<deadline: time.sleep(.05)
+            self.assertTrue(marker.exists())
+            p.send_signal(signal.SIGTERM)
+            out,err=p.communicate(timeout=5)
+            self.assertEqual(p.returncode,143,err+out)
+            self.assertFalse(run_dir.exists())
+            self.assertTrue(survivor.exists())
+            pid=int(marker.read_text())
+            with self.assertRaises(ProcessLookupError): os.kill(pid,0)
+        finally:
+            if p.poll() is None: p.kill(); p.communicate()
 
     def test_worker_concurrency_and_cleanup(self):
         code='set -eu\n'+''.join(function(n) for n in ('run_mtr_group','stop_tree','cleanup_tmp'))+'''

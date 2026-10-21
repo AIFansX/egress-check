@@ -294,7 +294,7 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-[[ $INTERACTIVE -eq 1 ]] && interactive_menu
+[[ $INTERACTIVE -eq 1 ]] && interactive_menu >&2
 
 for setting in MTR_TIMEOUT MTR_MAXTTL MTR_COUNT MTR_ATTEMPTS MTR_BUDGET IP_LOOKUP_CACHE_TTL PATH_SUMMARY_LIMIT; do
     value="${!setting}"
@@ -814,7 +814,8 @@ stop_tree() {
 }
 cleanup_tmp() {
     local pid
-    for pid in "${ACTIVE_WORKERS[@]}" "${SPIN_PID:-}"; do
+    # Bash 4.2 treats expansion of an empty array as unset under nounset.
+    for pid in ${ACTIVE_WORKERS[@]+"${ACTIVE_WORKERS[@]}"} "${SPIN_PID:-}"; do
         [[ -n "$pid" ]] || continue
         if kill -0 "$pid" 2>/dev/null; then stop_tree "$pid"; fi
         wait "$pid" 2>/dev/null || true
@@ -877,7 +878,7 @@ latency_color() {
     local latency="${1:-"-"}"
     if [[ "$latency" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
         if awk -v v="$latency" 'BEGIN { exit !(v < 50) }'; then printf '%s' "$GREEN"
-        elif awk -v v="$latency" 'BEGIN { exit !(v < 200) }'; then printf '%s' "$YELLOW"
+        elif awk -v v="$latency" 'BEGIN { exit !(v <= 200) }'; then printf '%s' "$YELLOW"
         else printf '%s' "$BROWN"; fi
     else
         printf '%s' "$GRAY"
@@ -979,7 +980,7 @@ run_mtr_group() {
                 if kill -0 "$pid" 2>/dev/null; then pending+=("$pid")
                 else wait "$pid" 2>/dev/null || true; fi
             done
-            ACTIVE_WORKERS=("${pending[@]}")
+            ACTIVE_WORKERS=(${pending[@]+"${pending[@]}"})
             (( ${#ACTIVE_WORKERS[@]} < maxjobs )) || sleep 0.1
         done
         (
