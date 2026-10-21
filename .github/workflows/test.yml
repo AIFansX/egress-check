@@ -37,6 +37,6 @@ jobs:
     runs-on: ubuntu-latest
     container: alpine:3.22
     steps:
-      - run: apk add --no-cache bash python3 jq coreutils procps git
+      - run: apk add --no-cache bash python3 jq coreutils git
       - uses: actions/checkout@v4
       - run: bash -n ip.sh && python3 tests/test_regression.py

@@ -808,7 +808,7 @@ stop_tree() {
     local parent="$1" child
     while read -r child; do
         [[ -n "$child" ]] && stop_tree "$child"
-    done < <(ps -eo pid=,ppid= | awk -v p="$parent" '$2==p {print $1}')
+    done < <({ ps -eo pid=,ppid= 2>/dev/null || ps -o pid,ppid; } | awk -v p="$parent" '$2==p {print $1}')
     kill -TERM "$parent" 2>/dev/null || true
     kill -KILL "$parent" 2>/dev/null || true
 }
