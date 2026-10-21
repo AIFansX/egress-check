@@ -1037,7 +1037,7 @@ print_result_row() {
         [[ "$is_split" == -1 ]] && status="${9:-无法判定}"
         if [[ "$is_split" == 1 ]]; then
             latency_disp="$(printf '%s%s%s' "$YELLOW" "$(format_latency_text "$latency")" "$R")"
-            printf "      %b  %s%-*s  %b  %s%-3s  ⮜ 疑似分流%s\n" "$marker" "$YELLOW" "$domain_width" "$domain" "$latency_disp" "$YELLOW" "$cc" "$R"
+            printf "      %b  %s%-*s  %b  %s%-3s  ⮜ 分流%s\n" "$marker" "$YELLOW" "$domain_width" "$domain" "$latency_disp" "$YELLOW" "$cc" "$R"
         else
             [[ -z "$asn" && "$is_split" != -1 ]] && status="$isp"
             [[ "$latency" == - && "$ip" != - ]] && status+=" (目标未回应)"
@@ -1051,7 +1051,7 @@ print_result_row() {
     # All markers occupy one display cell, including color-disabled output.
     if [[ "$is_split" == "1" ]]; then
         latency_disp="$(printf '%s%s%s' "$YELLOW" "$(format_latency_text "$latency")" "$R")"
-        printf "      %b  %s%-*s  %-*s  %b  %s%-3s  %s  ⮜ 疑似分流%s\n" "$marker" "$YELLOW" "$domain_width" "$domain" "$ip_width" "$ip" "$latency_disp" "$YELLOW" "$cc" "$asn_isp" "$R"
+        printf "      %b  %s%-*s  %-*s  %b  %s%-3s  %s  ⮜ 分流%s\n" "$marker" "$YELLOW" "$domain_width" "$domain" "$ip_width" "$ip" "$latency_disp" "$YELLOW" "$cc" "$asn_isp" "$R"
     else
         latency_disp="$(format_latency "$latency")"
         printf "      %b  %-*s  %-*s  %b  %-3s  %s%s%s\n" "$marker" "$domain_width" "$domain" "$ip_width" "$ip" "$latency_disp" "$cc" "$DIM" "$asn_isp" "$R"
@@ -1361,9 +1361,9 @@ run_check_pass() {
             done
         done
         if [[ $split_idx -ge 1 ]]; then
-            printf "  %s%s %s复测发现首跳 ASN 差异: %d 组, %d 个域名疑似分流；不代表目标实际出口已改变%s\n" "$BOLD" "$SYM_WARN" "$YELLOW" "$split_idx" "$split_domain_count" "$R"
+            printf "  %s%s %s检测到分流: %d 条非默认线路, %d 个域名被分流到其他出口%s\n" "$BOLD" "$SYM_WARN" "$YELLOW" "$split_idx" "$split_domain_count" "$R"
         elif [[ $unknown_count -eq 0 ]]; then
-            printf "  %s%s %s所有域名走同一出口（AS%s） - 未检测到分流%s\n" "$BOLD" "$SYM_INFO" "$GREEN" "$effective_base_asn" "$R"
+            printf "  %s%s %s所有域名走同一出口 (AS%s) — 未检测到分流%s\n" "$BOLD" "$SYM_INFO" "$GREEN" "$effective_base_asn" "$R"
         else
             printf "  %s%s %s本轮 %d 个域名无法判定%s\n" "$BOLD" "$SYM_INFO" "$GRAY" "$unknown_count" "$R"
         fi
@@ -1459,11 +1459,11 @@ END_EPOCH=$(date +%s); ELAPSED=$((END_EPOCH - START_EPOCH)); ELAPSED_STR="$(form
 if [[ $OUTPUT_JSON -eq 0 ]]; then
     printf "\n"; rule_double 72
     if [[ $V4_PASS_RAN -eq 1 ]]; then
-        printf "  IPv4:  %s%d 域名%s   %s%d 种可见 ASN%s   %s%d 疑似分流%s   %s%d 路径隐藏%s   %s%d 探测失败%s\n" "$GREEN" "$V4_OK" "$R" "$CYAN" "$V4_ROUTE_COUNT" "$R" "$YELLOW" "$V4_SPLIT_DOMAINS" "$R" "$GRAY" "$V4_HIDDEN" "$R" "$RED" "$V4_DOWN" "$R"
+        printf "  IPv4:  %s%d 域名%s   %s%d 种可见 ASN%s   %s%d 域名分流%s   %s%d 路径隐藏%s   %s%d 探测失败%s\n" "$GREEN" "$V4_OK" "$R" "$CYAN" "$V4_ROUTE_COUNT" "$R" "$YELLOW" "$V4_SPLIT_DOMAINS" "$R" "$GRAY" "$V4_HIDDEN" "$R" "$RED" "$V4_DOWN" "$R"
         printf "         %s%d 无法判定（包含隐藏、失败及首跳证据不足）%s\n" "$GRAY" "$V4_UNKNOWN" "$R"
     else printf "  IPv4:  %s skipped\n" "$SYM_SKIP"; fi
     if [[ $V6_PASS_RAN -eq 1 ]]; then
-        printf "  IPv6:  %s%d 域名%s   %s%d 种可见 ASN%s   %s%d 疑似分流%s   %s%d 路径隐藏%s   %s%d 探测失败%s\n" "$GREEN" "$V6_OK" "$R" "$CYAN" "$V6_ROUTE_COUNT" "$R" "$YELLOW" "$V6_SPLIT_DOMAINS" "$R" "$GRAY" "$V6_HIDDEN" "$R" "$RED" "$V6_DOWN" "$R"
+        printf "  IPv6:  %s%d 域名%s   %s%d 种可见 ASN%s   %s%d 域名分流%s   %s%d 路径隐藏%s   %s%d 探测失败%s\n" "$GREEN" "$V6_OK" "$R" "$CYAN" "$V6_ROUTE_COUNT" "$R" "$YELLOW" "$V6_SPLIT_DOMAINS" "$R" "$GRAY" "$V6_HIDDEN" "$R" "$RED" "$V6_DOWN" "$R"
         printf "         %s%d 无法判定（包含隐藏、失败及首跳证据不足）%s\n" "$GRAY" "$V6_UNKNOWN" "$R"
     else printf "  IPv6:  %s skipped  %s%s%s\n" "$SYM_SKIP" "$DIM" "${V6_SKIP_REASON:-}" "$R"; fi
     printf "  %selapsed:%s %s\n" "$DIM" "$R" "$ELAPSED_STR"; rule_double 72

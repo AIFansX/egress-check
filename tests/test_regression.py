@@ -286,7 +286,7 @@ done
         self.assertEqual(len({re.search(r' (TW|US|--)($| )',s).start() for s in lines}),1)
         split_lines=[s for s in result.stdout.splitlines() if 'long-domain.example' in s]
         self.assertEqual(len(split_lines),24)
-        self.assertTrue(all('⮜ 疑似分流' in s for s in split_lines))
+        self.assertTrue(all('⮜ 分流' in s for s in split_lines))
         self.assertTrue(all('\x1b[33m' in s and s.endswith('\x1b[0m') for s in split_lines[12:]))
         normal_lines=[s for s in result.stdout.splitlines() if 'a.example' in s]
         self.assertIn('\x1b[32m',normal_lines[12])
@@ -509,8 +509,9 @@ printf '%s\\n' '1.|-- 10.0.0.1 0.0% 3 1 1 1 1 0' "2.|-- $hop 0.0% 3 1 1 1 1 0" '
         self.assertTrue(obj['ipv4']['split_routing_detected'])
         self.assertEqual(obj['ipv4']['results'][0]['comparison'],'repeatable_difference')
         text=self.run_script('-4','--no-color').stdout
-        self.assertIn('疑似分流',text)
-        self.assertNotIn('被分流到其他出口',text)
+        self.assertIn('⮜ 分流',text)
+        self.assertIn('检测到分流: 1 条非默认线路, 1 个域名被分流到其他出口',text)
+        self.assertIn('1 域名分流',text)
         self.assertNotIn('未检测到分流',text)
 
     def test_repeat_pins_target_and_protocol(self):
@@ -548,7 +549,7 @@ fi''')
         text=self.run_script('-4','--no-color').stdout
         self.assertNotIn('首跳证据不足 / 无法判定',text)
         self.assertIn('符合预期（未分流）',text)
-        self.assertIn('所有域名走同一出口（AS4780） - 未检测到分流',text)
+        self.assertIn('所有域名走同一出口 (AS4780) — 未检测到分流',text)
 
     def test_same_asn_ignores_depth_protocol_and_alternate_responders(self):
         reports=[
